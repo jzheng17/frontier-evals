@@ -136,8 +136,6 @@ def build_alcatraz_overrides(
 # -- Modal-specific injection --
 
 MODAL_FIELDS = [
-    "dockerfile",
-    "context_dir",
     "image_tag",
     "gpu_type",
     "gpu_count",
@@ -186,10 +184,9 @@ def build_env_overrides(
 def print_env_summary(component: str, merged: dict[str, Any]) -> None:
     runtime_type = merged.get("type", "alcatraz")
     if _is_modal_runtime(runtime_type):
-        dockerfile = merged.get("dockerfile", "?")
         gpu = merged.get("gpu_type", "none")
         gpu_count = merged.get("gpu_count", 0)
-        print(f"  {component}: modal  dockerfile={dockerfile}  gpu={gpu}:{gpu_count}")
+        print(f"  {component}: modal  gpu={gpu}:{gpu_count}")
     else:
         image = merged.get("image", "?")
         gpu = merged.get("is_nvidia_gpu_env", False)

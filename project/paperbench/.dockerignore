@@ -1,4 +1,10 @@
+# Exclude large data directories from Modal build context
 runs/
-/*runs/
-/runs*/
+data/
+_harbor_export/
+_harbor_export_union/
+.venv/
 .env
+*.egg-info/
+__pycache__/
+.git/

@@ -12,9 +12,6 @@ Usage via chz entrypoint:
 
 from __future__ import annotations
 
-import io
-import tarfile
-import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncGenerator
@@ -24,6 +21,8 @@ from typing_extensions import override
 
 import chz
 import modal
+
+modal.enable_output()
 
 from nanoeval.solvers.computer_tasks.code_execution_interface import (
     ComputerConfiguration,
@@ -133,22 +132,9 @@ class ModalComputerRuntime(ComputerRuntime):
         paperbench.solver.computer_runtime=paperbench.runtime.modal:ModalComputerRuntime
         paperbench.solver.computer_runtime.gpu_type=a10g
         paperbench.solver.computer_runtime.gpu_count=1
-        paperbench.solver.computer_runtime.dockerfile=paperbench/Dockerfile.base
     """
 
     # -- Image configuration --
-    dockerfile: str = chz.field(
-        default="paperbench/Dockerfile.base",
-        doc="Path to the Dockerfile, relative to the paperbench project root.",
-    )
-    context_dir: str | None = chz.field(
-        default=None,
-        doc=(
-            "Docker build context directory. Defaults to the directory containing "
-            "the Dockerfile. Set to project root if the Dockerfile uses COPY from "
-            "paths relative to the project."
-        ),
-    )
     image_tag: str = chz.field(
         default="pb-env:latest",
         doc="Image tag for identification/logging. Does not affect the built image.",
@@ -235,36 +221,117 @@ class ModalComputerRuntime(ComputerRuntime):
                     output=output,
                 )
 
+    def _build_image(self) -> modal.Image:
+        """Build the PaperBench sandbox image using Modal's programmatic API.
+
+        Equivalent to Dockerfile.base but avoids from_dockerfile() which has
+        opaque build failures. Each step mirrors a RUN/COPY in the Dockerfile.
+        """
+        project_root = Path(__file__).resolve().parents[2]
+
+        # Start from Ubuntu 24.04
+        image = modal.Image.from_registry("ubuntu:24.04")
+
+        # Directory structure matching Dockerfile.base ENV/mkdir
+        image = image.run_commands(
+            "mkdir -p /home/logs /home/agent /home/submission /home/paper /home/.vscode "
+            "/submission /output"
+        )
+
+        # COPY local files (launch.json, pre-commit, apply_patch.py).
+        # copy=True embeds files in the image layer so run_commands can use them.
+        image = image.add_local_file(
+            str(project_root / "paperbench" / "solvers" / "launch.json"),
+            "/home/.vscode/launch.json",
+            copy=True,
+        )
+        image = image.add_local_file(
+            str(project_root / "paperbench" / "solvers" / "apply_patch.py"),
+            "/home/agent/apply_patch.py",
+            copy=True,
+        )
+        image = image.add_local_file(
+            str(project_root / "paperbench" / "solvers" / "pre-commit"),
+            "/home/submission/.git/hooks/pre-commit",
+            copy=True,
+        )
+
+        # System packages (matches apt-get install block in Dockerfile.base)
+        image = image.run_commands(
+            "export DEBIAN_FRONTEND=noninteractive && "
+            "apt-get update && apt-get install -y "
+            "curl wget git vim nano unzip zip p7zip-full "
+            "python3 python3-pip python3-venv python3-dev python-is-python3 "
+            "build-essential openssh-server tmux gettext sudo ffmpeg libsm6 libxext6 "
+            "&& rm -rf /var/lib/apt/lists/*"
+        )
+        image = image.run_commands(
+            "export DEBIAN_FRONTEND=noninteractive && apt update && apt install -y jupyter"
+        )
+
+        # Docker daemon (for docker-in-sandbox support)
+        image = image.run_commands(
+            "curl -fsSL https://get.docker.com -o /tmp/get-docker.sh && "
+            "chmod 700 /tmp/get-docker.sh && /tmp/get-docker.sh"
+        )
+
+        # Miniconda (always x86_64 on Modal)
+        image = image.run_commands(
+            'wget "https://repo.anaconda.com/miniconda/Miniconda3-py313_25.5.1-0-Linux-x86_64.sh" '
+            "-O /tmp/miniconda.sh && "
+            "bash /tmp/miniconda.sh -b -p /opt/conda && "
+            "rm /tmp/miniconda.sh && "
+            "/opt/conda/bin/conda init"
+        )
+
+        # Conda env creation
+        image = image.run_commands(
+            "/opt/conda/bin/conda tos accept --override-channels "
+            "--channel https://repo.anaconda.com/pkgs/main && "
+            "/opt/conda/bin/conda tos accept --override-channels "
+            "--channel https://repo.anaconda.com/pkgs/r && "
+            "/opt/conda/bin/conda create -n agent python=3.12 -y"
+        )
+
+        # Git setup for submission directory
+        image = image.run_commands(
+            "cd /home/submission && git init && mkdir -p .git/hooks && "
+            "chmod +x .git/hooks/pre-commit && "
+            'git config --global user.email "agent@example.com" && '
+            'git config --global user.name "agent"'
+        )
+
+        # apply_patch helper
+        image = image.run_commands(
+            "echo '#!/bin/bash' > /bin/apply_patch && "
+            """echo 'python /home/agent/apply_patch.py "$@"' >> /bin/apply_patch && """
+            "chmod +x /bin/apply_patch"
+        )
+
+        # Environment variables matching Dockerfile.base
+        image = image.env({
+            "WORKSPACE_BASE": "/home",
+            "SUBMISSION_DIR": "/home/submission",
+            "LOGS_DIR": "/home/logs",
+            "AGENT_DIR": "/home/agent",
+            "CONDA_ENV_NAME": "agent",
+            "REQUIREMENTS": "/home/agent/requirements.txt",
+            "PYTHON_VERSION": "3.12",
+            "PATH": "/opt/conda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        })
+
+        image = image.workdir("/home")
+
+        return image
+
     @override
     @asynccontextmanager
     async def _start_computer(
         self, task: ComputerConfiguration
     ) -> AsyncGenerator[ModalComputerInterface, None]:
-        # Resolve Dockerfile path.
-        project_root = Path(__file__).resolve().parents[2]  # paperbench project root
-        dockerfile_path = project_root / self.dockerfile
-        if not dockerfile_path.exists():
-            raise FileNotFoundError(
-                f"Dockerfile not found: {dockerfile_path}. "
-                f"Ensure the path is correct relative to the paperbench project root."
-            )
+        logger.info("Building Modal image", image_tag=self.image_tag)
 
-        context = Path(self.context_dir) if self.context_dir else dockerfile_path.parent
-        if not context.is_absolute():
-            context = project_root / context
-
-        logger.info(
-            "Building Modal image",
-            dockerfile=str(dockerfile_path),
-            context_dir=str(context),
-            image_tag=self.image_tag,
-        )
-
-        # Build the image from the Dockerfile.
-        image = modal.Image.from_dockerfile(
-            path=dockerfile_path,
-            context_dir=context,
-        )
+        image = self._build_image()
 
         # Resolve GPU configuration.
         gpu_config = None

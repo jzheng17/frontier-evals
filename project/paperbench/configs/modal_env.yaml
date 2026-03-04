@@ -20,25 +20,22 @@ defaults:
     OPENAI_API_KEY: ${OPENAI_API_KEY}
 
 # Component-level configs.
-# Each component specifies its Dockerfile and GPU requirements.
+# Image is built programmatically by ModalComputerRuntime._build_image().
 components:
   solver:
     # Runtime class — full chz import path.
     type: "paperbench.runtime.modal:ModalComputerRuntime"
-    dockerfile: "paperbench/Dockerfile.base"
     gpu_type: "a10g"
     gpu_count: 1
 
   judge:
     type: "paperbench.runtime.modal:ModalComputerRuntime"
-    dockerfile: "paperbench/Dockerfile.base"
     # Judge is CPU-only (just LLM API calls).
     gpu_type: null
     gpu_count: 0
 
   reproduction:
     type: "paperbench.runtime.modal:ModalComputerRuntime"
-    dockerfile: "paperbench/reproducer.Dockerfile"
     # Reproduction typically needs GPU (runs reproduce.sh with model inference).
     gpu_type: "a10g"
     gpu_count: 1
