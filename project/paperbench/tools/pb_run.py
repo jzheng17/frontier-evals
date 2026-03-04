@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
-"""Run PaperBench nano entrypoint with injected LocalConfig runtime env."""
+"""Run PaperBench nano entrypoint with injected runtime env.
+
+Supports two runtime backends:
+  - Alcatraz/LocalConfig (local Docker via docker.sock)
+  - Modal (Modal Sandboxes with GPU support)
+
+The backend is determined by the `type` field in each component's config
+within the env YAML file.
+"""
 
 import argparse
 import json
 import os
-import platform
 import subprocess
 import sys
 from pathlib import Path
@@ -12,13 +19,16 @@ from typing import Any
 
 
 LOCALCONFIG_TYPE = "alcatraz.clusters.local:LocalConfig"
-RUNTIME_TYPE = "nanoeval_alcatraz.alcatraz_computer_interface:AlcatrazComputerRuntime"
+ALCATRAZ_RUNTIME_TYPE = (
+    "nanoeval_alcatraz.alcatraz_computer_interface:AlcatrazComputerRuntime"
+)
+MODAL_RUNTIME_TYPE = "paperbench.runtime.modal:ModalComputerRuntime"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Wrapper to run paperbench.nano.entrypoint with injected LocalConfig env. "
+            "Wrapper to run paperbench.nano.entrypoint with injected runtime env. "
             "Extra key=value args are forwarded to the nano entrypoint."
         )
     )
@@ -26,7 +36,7 @@ def parse_args() -> argparse.Namespace:
         "--env-config",
         required=True,
         type=Path,
-        help="Path to local env YAML (e.g. configs/local_env.yaml)",
+        help="Path to env YAML (e.g. configs/local_env.yaml or configs/modal_env.yaml)",
     )
     parser.add_argument(
         "overrides",
@@ -74,53 +84,116 @@ def has_key_prefix(overrides: list[str], prefix: str) -> bool:
 def stringify_value(value: Any) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
+    if value is None:
+        return "null"
     if isinstance(value, (dict, list)):
         return json.dumps(value, separators=(",", ":"))
     return str(value)
 
 
-def build_env_overrides(component: str, merged: dict[str, Any], overrides: list[str]) -> list[str]:
+def _is_modal_runtime(runtime_type: str) -> bool:
+    return "modal" in runtime_type.lower() or "Modal" in runtime_type
+
+
+# -- Alcatraz-specific injection --
+
+ALCATRAZ_FIELDS = [
+    "image",
+    "pull_from_registry",
+    "no_network",
+    "is_nvidia_gpu_env",
+    "docker_host",
+    "local_network",
+    "volumes_config",
+    "environment",
+    "side_images",
+    "jupyter_setup",
+    "wait_for_health",
+]
+
+
+def build_alcatraz_overrides(
+    component: str, merged: dict[str, Any], overrides: list[str]
+) -> list[str]:
     injected: list[str] = []
     runtime_prefix = f"paperbench.{component}.computer_runtime"
     env_prefix = f"{runtime_prefix}.env"
 
-    # Runtime override must be an exact key to avoid env.* subkeys blocking runtime injection.
     if not has_exact_key(overrides, runtime_prefix):
-        injected.append(f"{runtime_prefix}={RUNTIME_TYPE}")
-    else:
-        print(f"Skipping {component} runtime injection due to CLI override.")
+        injected.append(f"{runtime_prefix}={ALCATRAZ_RUNTIME_TYPE}")
 
     if not has_exact_key(overrides, env_prefix):
         injected.append(f"{env_prefix}={LOCALCONFIG_TYPE}")
-    else:
-        print(f"Skipping {component} env injection due to CLI override.")
 
-    fields = [
-        "image",
-        "pull_from_registry",
-        "no_network",
-        "is_nvidia_gpu_env",
-        "docker_host",
-        "local_network",
-        "volumes_config",
-        "environment",
-        "side_images",
-        "jupyter_setup",
-        "wait_for_health",
-    ]
-    for field in fields:
+    for field in ALCATRAZ_FIELDS:
         if field in merged and not has_key_prefix(overrides, f"{env_prefix}.{field}"):
-            injected.append(f"{env_prefix}.{field}={stringify_value(merged[field])}")
+            injected.append(
+                f"{env_prefix}.{field}={stringify_value(merged[field])}"
+            )
     return injected
 
 
+# -- Modal-specific injection --
+
+MODAL_FIELDS = [
+    "dockerfile",
+    "context_dir",
+    "image_tag",
+    "gpu_type",
+    "gpu_count",
+    "sandbox_timeout",
+    "app_name",
+    "block_network",
+    "environment",
+    "enable_docker_daemon",
+]
+
+
+def build_modal_overrides(
+    component: str, merged: dict[str, Any], overrides: list[str]
+) -> list[str]:
+    injected: list[str] = []
+    runtime_prefix = f"paperbench.{component}.computer_runtime"
+
+    # Inject the runtime class itself.
+    if not has_exact_key(overrides, runtime_prefix):
+        injected.append(f"{runtime_prefix}={MODAL_RUNTIME_TYPE}")
+
+    # Inject fields directly on the runtime (no .env intermediary).
+    for field in MODAL_FIELDS:
+        if field in merged and not has_key_prefix(
+            overrides, f"{runtime_prefix}.{field}"
+        ):
+            injected.append(
+                f"{runtime_prefix}.{field}={stringify_value(merged[field])}"
+            )
+    return injected
+
+
+# -- Unified dispatch --
+
+
+def build_env_overrides(
+    component: str, merged: dict[str, Any], overrides: list[str]
+) -> list[str]:
+    runtime_type = merged.get("type", ALCATRAZ_RUNTIME_TYPE)
+    if _is_modal_runtime(runtime_type):
+        return build_modal_overrides(component, merged, overrides)
+    else:
+        return build_alcatraz_overrides(component, merged, overrides)
+
+
 def print_env_summary(component: str, merged: dict[str, Any]) -> None:
-    image = merged.get("image")
-    pull_from_registry = merged.get("pull_from_registry")
-    no_network = merged.get("no_network")
-    print(
-        f"{component}: image={image} pull_from_registry={pull_from_registry} no_network={no_network}"
-    )
+    runtime_type = merged.get("type", "alcatraz")
+    if _is_modal_runtime(runtime_type):
+        dockerfile = merged.get("dockerfile", "?")
+        gpu = merged.get("gpu_type", "none")
+        gpu_count = merged.get("gpu_count", 0)
+        print(f"  {component}: modal  dockerfile={dockerfile}  gpu={gpu}:{gpu_count}")
+    else:
+        image = merged.get("image", "?")
+        gpu = merged.get("is_nvidia_gpu_env", False)
+        print(f"  {component}: alcatraz  image={image}  gpu={gpu}")
 
 
 def main() -> None:
@@ -140,15 +213,24 @@ def main() -> None:
     for component in ("solver", "judge", "reproduction"):
         if component not in components:
             raise ValueError(f"Missing components.{component} in env config.")
-        merged = merge_component_config(defaults, local_overrides, components[component])
+        merged = merge_component_config(
+            defaults, local_overrides, components[component]
+        )
         merged_configs[component] = merged
         injected_overrides.extend(build_env_overrides(component, merged, overrides))
 
-    print("Injected LocalConfig env summary:")
+    # Detect runtime backend from first component.
+    first_type = merged_configs["solver"].get("type", "alcatraz")
+    backend = "Modal" if _is_modal_runtime(first_type) else "Alcatraz/LocalConfig"
+    print(f"Runtime backend: {backend}")
     for component in ("solver", "judge", "reproduction"):
         print_env_summary(component, merged_configs[component])
 
-    argv = [sys.executable, "-m", "paperbench.nano.entrypoint"] + injected_overrides + overrides
+    argv = (
+        [sys.executable, "-m", "paperbench.nano.entrypoint"]
+        + injected_overrides
+        + overrides
+    )
 
     try:
         os.execvpe(argv[0], argv, os.environ)

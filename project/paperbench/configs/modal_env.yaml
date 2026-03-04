@@ -1,0 +1,44 @@
+# Modal runtime preset for PaperBench.
+#
+# Runs agent, reproduction, and grading stages on Modal Sandboxes
+# instead of local Docker containers (Alcatraz/LocalConfig).
+#
+# Usage:
+#   python tools/pb_run.py --env-config configs/modal_env.yaml \
+#       paperbench.paper_split=pilot \
+#       paperbench.solver.time_limit=3600
+
+version: 1
+
+defaults:
+  # Modal-specific defaults (these are fields on ModalComputerRuntime, not ClusterConfig).
+  sandbox_timeout: 86400     # 24 hours max sandbox lifetime
+  app_name: "__paperbench__"
+  enable_docker_daemon: false
+  # Environment variables injected into every sandbox.
+  environment:
+    OPENAI_API_KEY: ${OPENAI_API_KEY}
+
+# Component-level configs.
+# Each component specifies its Dockerfile and GPU requirements.
+components:
+  solver:
+    # Runtime class — full chz import path.
+    type: "paperbench.runtime.modal:ModalComputerRuntime"
+    dockerfile: "paperbench/Dockerfile.base"
+    gpu_type: "a10g"
+    gpu_count: 1
+
+  judge:
+    type: "paperbench.runtime.modal:ModalComputerRuntime"
+    dockerfile: "paperbench/Dockerfile.base"
+    # Judge is CPU-only (just LLM API calls).
+    gpu_type: null
+    gpu_count: 0
+
+  reproduction:
+    type: "paperbench.runtime.modal:ModalComputerRuntime"
+    dockerfile: "paperbench/reproducer.Dockerfile"
+    # Reproduction typically needs GPU (runs reproduce.sh with model inference).
+    gpu_type: "a10g"
+    gpu_count: 1
