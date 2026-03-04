@@ -52,7 +52,13 @@ RUN curl -fsSL https://get.docker.com -o /tmp/get-docker.sh && \
     chmod 700 /tmp/get-docker.sh && \
     /tmp/get-docker.sh
 
-RUN wget https://repo.anaconda.com/miniconda/Miniconda3-py313_25.5.1-0-Linux-x86_64.sh -O /tmp/miniconda.sh \
+ARG TARGETARCH
+RUN if [ "${TARGETARCH}" = "arm64" ]; then \
+        MINICONDA_ARCH="Linux-aarch64"; \
+    else \
+        MINICONDA_ARCH="Linux-x86_64"; \
+    fi && \
+    wget "https://repo.anaconda.com/miniconda/Miniconda3-py313_25.5.1-0-${MINICONDA_ARCH}.sh" -O /tmp/miniconda.sh \
     && bash /tmp/miniconda.sh -b -p /opt/conda \
     && rm /tmp/miniconda.sh \
     && /opt/conda/bin/conda init

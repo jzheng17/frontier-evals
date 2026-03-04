@@ -55,9 +55,13 @@ class PaperBench(PythonCodingEval):
     monitor_config: Monitor.Config = chz.field(default_factory=BasicMonitor.Config)
 
     # task args
-    paper_split: Literal["debug", "dev", "human", "testing", "all"] = chz.field(
+    paper_split: Literal["debug", "dev", "human", "testing", "all", "pilot"] = chz.field(
         default="all",
-        doc="Paper split to use. One of 'testing' (lca-on-the-line only), 'debug' (rice only), 'dev' (two papers), 'human' (papers used in human baseline), 'all' (full set)",
+        doc=(
+            "Paper split to use. One of 'testing' (lca-on-the-line only), "
+            "'debug' (rice only), 'dev' (two papers), 'human' (papers used in human baseline), "
+            "'all' (full set), 'pilot' (local/dev-only fast path)."
+        ),
         # should match what is in experiments/splits/
     )
     resume_run_group_id: str | None = chz.field(default=None)

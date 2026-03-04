@@ -1,7 +1,10 @@
 import json
+import os
+import shutil
+import tarfile
+import tempfile
 import time
 from pathlib import Path
-
 import blobfile as bf
 import structlog
 from typing_extensions import override
@@ -13,6 +16,7 @@ from paperbench.nano.structs import AgentOutput
 from paperbench.nano.task import PBTask
 from paperbench.solvers.base import BasePBSolver
 from paperbench.solvers.utils import check_for_existing_run, sanity_check_docker
+from paperbench.utils import get_timestamp
 
 logger = structlog.stdlib.get_logger(component=__name__)
 
@@ -25,6 +29,50 @@ BASH_COMMANDS = [
     f"cat {WORKSPACE_BASE}/instructions.txt",
     f"touch {SUBMISSION_DIR}/reproduce.sh",
 ]
+
+
+def _write_dummy_submission_tar(run_dir: str) -> str:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root_dir = Path(tmpdir)
+        submission_dir = root_dir / "submission"
+        submission_dir.mkdir(parents=True, exist_ok=True)
+        script_contents = (
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "echo 'dummy reproduction placeholder'\n"
+            "exit 0\n"
+        )
+        root_script = root_dir / "reproduce.sh"
+        root_script.write_text(script_contents)
+        os.chmod(root_script, 0o755)
+        root_readme = root_dir / "README.txt"
+        root_readme.write_text("Dummy submission placeholder.\n")
+
+        sub_script = submission_dir / "reproduce.sh"
+        sub_script.write_text(script_contents)
+        os.chmod(sub_script, 0o755)
+        sub_readme = submission_dir / "README.txt"
+        sub_readme.write_text("Dummy submission placeholder.\n")
+
+        with tempfile.TemporaryFile() as tmp:
+            with tarfile.open(mode="w:gz", fileobj=tmp) as tar:
+                tar.add(root_script, arcname="reproduce.sh")
+                tar.add(root_readme, arcname="README.txt")
+                tar.add(submission_dir, arcname="submission")
+            timestamp = get_timestamp()
+            destination_path = bf.join(
+                run_dir, "submissions", timestamp, "submission_executed.tar.gz"
+            )
+            bf.makedirs(bf.dirname(destination_path))
+            tmp.seek(0)
+            with bf.BlobFile(destination_path, "wb") as out_blob:
+                shutil.copyfileobj(tmp, out_blob)
+
+        with tarfile.open(destination_path, mode="r:gz") as tar:
+            names = set(tar.getnames())
+            assert "reproduce.sh" in names, "Dummy tar missing reproduce.sh"
+            assert "submission/reproduce.sh" in names, "Dummy tar missing submission/reproduce.sh"
+    return destination_path
 
 
 @chz.chz
@@ -76,5 +124,14 @@ class PaperBenchDummySolver(BasePBSolver):
             f.write(
                 "This is a dummy agent that runs some basic debug commands and uploads the results.\n"
             )
+
+        submission_tar = _write_dummy_submission_tar(task.run_dir)
+        logger.info(
+            "Wrote dummy submission tar",
+            run_id=task.run_id,
+            submission_tar=submission_tar,
+        )
+        with bf.BlobFile(bf.join(task.run_dir, "agent.log"), "a") as f:
+            f.write(f"Dummy submission tar written to {submission_tar}\n")
 
         return agent_output

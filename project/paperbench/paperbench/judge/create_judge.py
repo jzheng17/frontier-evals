@@ -6,6 +6,7 @@ from preparedness_turn_completer.turn_completer import TurnCompleter
 from paperbench.judge.base import Judge
 from paperbench.judge.dummyrandom import DummyJudge, RandomJudge
 from paperbench.judge.simple import SimpleJudge
+from paperbench.judge.upstream import UpstreamJudge
 from paperbench.paper_registry import Paper
 
 logger = structlog.stdlib.get_logger(component=__name__)
@@ -35,7 +36,7 @@ def handle_judge_kwargs(
         return judge_kwargs
     if completer_config is not None:
         judge_kwargs["completer_config"] = completer_config
-    if judge_type == "simple":
+    if judge_type in {"simple", "upstream"}:
         if paper is not None:
             judge_kwargs = handle_rubrics_for_simple_judge(judge_kwargs, paper)
 
@@ -60,6 +61,8 @@ def create_judge(
 
     if judge_type == "simple":
         return SimpleJudge(**{**judge_kwargs, **shared_kwargs})
+    elif judge_type == "upstream":
+        return UpstreamJudge(**{**judge_kwargs, **shared_kwargs})
     elif judge_type == "random":
         return RandomJudge(**{**judge_kwargs, **shared_kwargs})
     elif judge_type == "dummy":

@@ -1,0 +1,54 @@
+# Repro-only local runtime preset for PaperBench (no upstream changes).
+# Goal: make upstream commands stable on local machines by injecting Alcatraz LocalConfig,
+# disabling registry pulls, and choosing local image tags.
+#
+# Notes:
+# - agent/judge run in pb-env:latest
+# - reproduction runs in pb-reproducer:latest
+# - For GPU machines, set is_nvidia_gpu_env=true and optionally num_gpus via CLI keys
+#   (paperbench.*.computer_config.num_gpus) if needed by your runtime.
+
+version: 1
+
+defaults:
+  pull_from_registry: false
+  wait_for_health: true
+  tmux_enabled: false
+  # Set to true if you want the container to have no network at all.
+  # (This is stricter than "allow_internet" at the PaperBench level.)
+  no_network: false # required for jupyter startup in local alcatraz; paper-level internet control is separate
+  # Environment variables injected into the container process.
+  environment:
+    OPENAI_API_KEY: ${OPENAI_API_KEY}
+    OPENAI_MODEL: ${OPENAI_MODEL}
+
+# Component-level env configs injected into:
+# - paperbench.solver.computer_runtime.env
+# - paperbench.judge.computer_runtime.env
+# - paperbench.reproduction.computer_runtime.env
+components:
+  solver:
+    type: alcatraz.clusters.local:LocalConfig
+    image: "pb-env:latest"
+    is_nvidia_gpu_env: false
+
+  judge:
+    type: alcatraz.clusters.local:LocalConfig
+    image: "pb-env:latest"
+    # judges often shouldn't need internet; set true if you want hard isolation.
+    no_network: false # required for jupyter startup in local alcatraz; paper-level internet control is separate
+    is_nvidia_gpu_env: false
+
+  reproduction:
+    type: alcatraz.clusters.local:LocalConfig
+    image: "pb-reproducer:latest"
+    no_network: false # required for jupyter startup in local alcatraz; paper-level internet control is separate
+    # set true on GPU box; for apple silicon likely false
+    is_nvidia_gpu_env: false
+
+# Optional: docker host and local-network choices for LocalConfig.
+local:
+  docker_host: "unix:///var/run/docker.sock"
+  local_network: false
+  volumes_config: {}
+
