@@ -18,7 +18,7 @@ logger = structlog.stdlib.get_logger(component=__name__)
 class RunJudgeCliArgs:
     submission_path: Path = chz.field(doc="Path to the submission directory.")
     paper_id: str = chz.field(doc="Identifier for the paper.")
-    judge: Literal["dummy", "random", "simple"] = chz.field(
+    judge: Literal["dummy", "random", "simple", "harbor"] = chz.field(
         default="dummy",
         doc="Specify the judge to use.",
     )
@@ -93,8 +93,8 @@ def _resolve_completer_config(args: RunJudgeCliArgs) -> TurnCompleter.Config | N
     if completer_config is not None:
         return completer_config
 
-    if args.judge == "simple":
-        raise ValueError("When using the simple judge you must provide `completer_config`.")
+    if args.judge in {"simple", "harbor"}:
+        raise ValueError(f"When using the {args.judge} judge you must provide `completer_config`.")
 
     return None
 

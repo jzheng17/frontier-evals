@@ -54,12 +54,16 @@ CONTEXT_WINDOW_LENGTHS: dict[str, int] = {
     "gpt-5-codex": 400_000,
     "gpt-5-pro-2025-10-06": 400_000,
     "gpt-5-pro": 400_000,
+    "gpt-5.2": 400_000,
 }
 
 
 def get_model_context_window_length(model: str) -> int:
     if model not in CONTEXT_WINDOW_LENGTHS:
-        raise ValueError(f"Model {model} not found in context window lengths")
+        logger.warning(
+            f"Model {model} not in context window lengths, defaulting to 400k",
+        )
+        return 400_000
     return CONTEXT_WINDOW_LENGTHS[model]
 
 

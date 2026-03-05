@@ -18,6 +18,7 @@ defaults:
   # Environment variables injected into every sandbox.
   environment:
     OPENAI_API_KEY: ${OPENAI_API_KEY}
+    OPENAI_BASE_URL: ${LLM_BASE_URL:-}
 
 # Component-level configs.
 # Image is built programmatically by ModalComputerRuntime._build_image().
