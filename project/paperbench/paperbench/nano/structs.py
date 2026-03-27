@@ -201,8 +201,7 @@ class JudgeConfig(BaseModel):
     overwrite_existing_output: bool = False
     scaffold: str = "simple"
     completer_config: TurnCompleter.Config = OpenAICompletionsTurnCompleter.Config(
-        model="o3-mini-2025-01-31",
-        reasoning_effort="high",
+        model="gpt-5-mini",
     )
     code_only: bool = False
     resources_provided: bool = False

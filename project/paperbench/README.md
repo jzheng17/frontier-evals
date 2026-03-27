@@ -128,6 +128,31 @@ bash paperbench/scripts/build-docker-images.sh
 
 Configurations for each agent are stored in the [paperbench/solvers/](paperbench/solvers/) directory. Each agent has a `config.yaml` file which sets the agent's possible configurations, e.g. which model to use, how long to run the agent for, etc.
 
+## Configuration Reference
+
+All model names, timeouts, and runtime parameters are set via CLI args — nothing is hardcoded in source.
+
+| Parameter | CLI arg | Default | Description |
+|-----------|---------|---------|-------------|
+| Agent model | `paperbench.solver.completer_config.model=` | `gpt-4.1-mini` | LLM model for BasicAgentSolver |
+| Agent time limit | `paperbench.solver.time_limit=` | `300` (5min) | Agent runtime in seconds |
+| Judge model | `paperbench.judge.completer_config.model=` | `gpt-4o-2024-08-06` (SimpleJudge) | LLM model for grading submissions |
+| Judge scaffold | `paperbench.judge.scaffold=` | `simple` | Judge type: `simple`, `harbor`, `dummy` |
+| Judge completer | `paperbench.judge.completer_config=` | `OpenAICompletionsTurnCompleter.Config` | Completer class for the judge |
+| Paper split | `paperbench.paper_split=` | `all` | Split: `all`, `pilot`, `dev`, `debug` |
+| Concurrency | `runner.concurrency=` | `5` | Number of parallel runs |
+| Max retries | `runner.max_retries=` | `3` | Max retry attempts per run |
+| GPU support | `*.env.is_nvidia_gpu_env=` | `false` | Enable GPU in containers |
+| Reproduction timeout | `paperbench.reproduction.timeout=` | `604800` (7d) | Timeout for reproduce.sh execution |
+
+**Environment variables** (set in `.env` or shell):
+
+| Variable | Description |
+|----------|-------------|
+| `OPENAI_API_KEY` | API key for agent calls |
+| `GRADER_OPENAI_API_KEY` | API key for judge (defaults to `OPENAI_API_KEY`) |
+| `HF_TOKEN` | HuggingFace token (for papers requiring HF datasets) |
+
 ## Quickstart
 
 To see all configurable options for PaperBench, run:

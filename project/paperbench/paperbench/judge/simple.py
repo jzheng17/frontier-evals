@@ -127,7 +127,7 @@ class SimpleJudge(Judge):
         we fallback to a default OpenAICompletionsStructuredCompleter config
         """
         cfg = config or OpenAICompletionsTurnCompleter.Config(
-            model="gpt-4o-2024-08-06",
+            model="gpt-5-mini",
             response_format=response_format,
         )
         return cfg, cfg.build()

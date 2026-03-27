@@ -148,7 +148,9 @@ async def upload_sources(
     cmds = [
         f"ARCHIVE_PATH={container_tar_path}",
         "EXCLUDE_LIST=/tmp/exclude.txt",
-        f"tar -czf $ARCHIVE_PATH -X $EXCLUDE_LIST -C {container_tmp_dir} .",
+        f"tar -czf $ARCHIVE_PATH -X $EXCLUDE_LIST"
+        f" --exclude='.venv' --exclude='__pycache__'"
+        f" -C {container_tmp_dir} .",
     ]
 
     await computer.check_shell_command(" && ".join(cmds))

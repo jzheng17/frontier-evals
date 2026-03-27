@@ -63,7 +63,7 @@ logger = structlog.stdlib.get_logger(component=__name__)
 class BasicAgentSolver(BasePBSolver):
     completer_config: BasicAgentTurnCompleterConfig = chz.field(
         default_factory=lambda: OpenAIResponsesTurnCompleterConfig(
-            model="gpt-4.1-mini",
+            model="gpt-5-mini",
             tools=[WebSearchToolParam(type="web_search_preview")],
         )
     )

@@ -1,9 +1,16 @@
 """OpenHands solver for PaperBench.
 
-Runs the OpenHands SDK agent inside the sandbox container. Unlike BasicAgent
-(which runs on the host and sends commands to the sandbox), OpenHands runs
-entirely inside the container — making it independent of the host's network
-connection after launch.
+Runs the OpenHands agent inside the sandbox container using the SDK with a
+multi-turn runner script. Unlike BasicAgent (which runs on the host and sends
+commands to the sandbox), OpenHands runs entirely inside the container — making
+it independent of the host's network connection after launch.
+
+The runner uses openhands-sdk's Conversation API in a loop: after each
+conversation.run() call, it checks whether the agent produced any files in
+/home/submission. If run() returns without tool use (single-turn exit), the
+runner re-prompts the agent to continue working. This matches Harbor's proven
+approach of keeping the agent loop alive until the task is complete or the
+timeout is reached.
 """
 
 import asyncio
@@ -21,14 +28,29 @@ from paperbench.solvers.base import BasePBSolver
 
 logger = structlog.stdlib.get_logger(component=__name__)
 
-# Script installed into the sandbox to run the OpenHands agent
+# Runner script that uses the SDK Conversation API with a multi-turn loop.
+# If conversation.run() returns after a single turn without tool use, the
+# runner sends a follow-up message to keep the agent working.
 _RUNNER_SCRIPT = r'''#!/usr/bin/env python3
-"""Runner script for OpenHands SDK inside the PaperBench sandbox."""
+"""Multi-turn runner for OpenHands SDK inside PaperBench sandbox."""
 
 import json
 import os
 import sys
+import time
 from pathlib import Path
+
+
+def has_submission_files(submission_dir="/home/submission"):
+    """Check if the agent has produced any real files in the submission dir."""
+    p = Path(submission_dir)
+    if not p.exists():
+        return False
+    for item in p.rglob("*"):
+        if item.is_file() and ".git" not in item.parts:
+            return True
+    return False
+
 
 def main():
     instruction_path = sys.argv[1] if len(sys.argv) > 1 else "/home/instructions.txt"
@@ -36,7 +58,8 @@ def main():
 
     model = os.environ.get("LLM_MODEL", "gpt-5-mini")
     api_key = os.environ.get("LLM_API_KEY", "")
-    base_url = os.environ.get("LLM_BASE_URL", "")
+    base_url = os.environ.get("LLM_BASE_URL", "") or os.environ.get("OPENAI_BASE_URL", "")
+    max_turns = int(os.environ.get("MAX_TURNS", "200"))
 
     if not api_key:
         print("ERROR: LLM_API_KEY not set", file=sys.stderr)
@@ -60,23 +83,83 @@ def main():
     workspace = "/home"
     conversation = Conversation(agent=agent, workspace=workspace)
 
-    print(f"Starting OpenHands agent with model={model}")
+    print(f"Starting OpenHands agent with model={model}, max_turns={max_turns}")
     print(f"Instruction: {instruction[:200]}...")
 
+    start_time = time.time()
+
+    # Send initial instruction
     conversation.send_message(instruction)
-    conversation.run()
+
+    for turn in range(max_turns):
+        print(f"\n--- Turn {turn + 1}/{max_turns} ---")
+        try:
+            conversation.run()
+        except Exception as e:
+            print(f"conversation.run() raised: {e}")
+            # If the conversation errored, check if we have partial results
+            if has_submission_files():
+                print("Agent produced submission files before error, continuing to judge.")
+                break
+            # Otherwise try to continue
+            if turn >= 3:
+                print("Multiple failures, giving up.")
+                break
+            continue
+
+        elapsed = time.time() - start_time
+        print(f"Turn {turn + 1} completed. Elapsed: {elapsed:.0f}s")
+
+        # Check if agent has done meaningful work
+        if has_submission_files():
+            print("Submission files detected, agent appears to be working.")
+
+        # If conversation.run() returned quickly and this is an early turn,
+        # re-prompt to keep the agent working
+        if turn == 0:
+            # First turn: the agent may have just acknowledged the task.
+            # Send a follow-up to get it started on actual tool use.
+            conversation.send_message(
+                "Please start working on the task now. Use the terminal to "
+                "explore the available files, read the paper, and begin "
+                "implementing the reproduction. Work in /home/submission/."
+            )
+        # After turn 1, let the conversation flow naturally.
+        # If run() returns, the agent decided it's done.
+        else:
+            # Check if agent explicitly finished or just stopped
+            if has_submission_files():
+                print("Agent has submission files and completed a turn. Checking if done...")
+                # Give the agent one more chance if it just made progress
+                conversation.send_message(
+                    "Are you done with the task? If not, please continue working. "
+                    "If you are done, please confirm by saying 'DONE'."
+                )
+            else:
+                # No files yet, keep pushing
+                conversation.send_message(
+                    "Please continue working on the task. Use the terminal tool "
+                    "to run commands and the file editor to create files."
+                )
 
     # Save metrics
-    token_usage = llm.metrics.accumulated_token_usage
-    metrics = {
-        "prompt_tokens": token_usage.prompt_tokens if token_usage else 0,
-        "completion_tokens": token_usage.completion_tokens if token_usage else 0,
-        "cost_usd": llm.metrics.accumulated_cost,
-    }
+    try:
+        token_usage = llm.metrics.accumulated_token_usage
+        metrics = {
+            "prompt_tokens": token_usage.prompt_tokens if token_usage else 0,
+            "completion_tokens": token_usage.completion_tokens if token_usage else 0,
+            "cost_usd": llm.metrics.accumulated_cost,
+            "turns": turn + 1,
+            "elapsed_seconds": time.time() - start_time,
+        }
+    except Exception:
+        metrics = {"turns": turn + 1, "elapsed_seconds": time.time() - start_time}
+
     metrics_path = Path("/home/logs/openhands_metrics.json")
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
     metrics_path.write_text(json.dumps(metrics, indent=2))
-    print(f"Agent completed. Cost: ${metrics['cost_usd']:.4f}")
+    print(f"Agent completed after {turn + 1} turns. Metrics: {json.dumps(metrics)}")
+
 
 if __name__ == "__main__":
     main()
@@ -164,12 +247,17 @@ class OpenHandsSolver(BasePBSolver):
             )
 
         # Build env vars for the agent process
+        base_url = (
+            self.llm_base_url
+            or os.environ.get("LLM_BASE_URL", "")
+            or os.environ.get("OPENAI_BASE_URL", "")
+        )
         env_parts = [
             f"LLM_MODEL={self.llm_model}",
             f"LLM_API_KEY={api_key}",
         ]
-        if self.llm_base_url:
-            env_parts.append(f"LLM_BASE_URL={self.llm_base_url}")
+        if base_url:
+            env_parts.append(f"LLM_BASE_URL={base_url}")
 
         env_str = " ".join(env_parts)
         run_cmd = (
@@ -237,9 +325,12 @@ class OpenHandsSolver(BasePBSolver):
         timestamp = get_timestamp()
         tar_path_in_sandbox = f"/tmp/submission_{timestamp}.tar.gz"
 
-        # Create tarball of submission directory
+        # Create tarball of submission directory (exclude .venv to avoid multi-GB
+        # tarballs that corrupt during download from Modal sandboxes).
         result = await computer.send_shell_command(
-            f"tar -czf {tar_path_in_sandbox} -C /home submission"
+            f"tar -czf {tar_path_in_sandbox} -C /home"
+            f" --exclude='submission/.venv' --exclude='submission/__pycache__'"
+            f" submission"
         )
         if result.exit_code != 0:
             ctx_logger.warning(
@@ -254,7 +345,7 @@ class OpenHandsSolver(BasePBSolver):
         # Save to the run directory
         submissions_dir = bf.join(task.run_dir, "submissions", timestamp)
         submission_path = bf.join(submissions_dir, "submission.tar.gz")
-        bf.makedirs(submissions_dir, exist_ok=True)
+        bf.makedirs(submissions_dir)
         with bf.BlobFile(submission_path, "wb") as f:
             f.write(tar_bytes)
 

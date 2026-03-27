@@ -5,7 +5,6 @@ from preparedness_turn_completer.turn_completer import TurnCompleter
 
 from paperbench.judge.base import Judge
 from paperbench.judge.dummyrandom import DummyJudge, RandomJudge
-from paperbench.judge.harbor import HarborJudge
 from paperbench.judge.simple import SimpleJudge
 from paperbench.judge.upstream import UpstreamJudge
 from paperbench.paper_registry import Paper
@@ -41,8 +40,6 @@ def handle_judge_kwargs(
         if paper is not None:
             judge_kwargs = handle_rubrics_for_simple_judge(judge_kwargs, paper)
 
-    # harbor judge only needs completer_config and code_only (already set above)
-
     return judge_kwargs
 
 
@@ -68,8 +65,6 @@ def create_judge(
         return UpstreamJudge(**{**judge_kwargs, **shared_kwargs})
     elif judge_type == "random":
         return RandomJudge(**{**judge_kwargs, **shared_kwargs})
-    elif judge_type == "harbor":
-        return HarborJudge(**{**judge_kwargs, **shared_kwargs})
     elif judge_type == "dummy":
         return DummyJudge(**shared_kwargs)
     else:

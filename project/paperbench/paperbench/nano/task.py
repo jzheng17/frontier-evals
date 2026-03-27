@@ -366,7 +366,11 @@ class PBTask(ComputerTask):
                 retry_threshold=self.reproduction.retry_threshold,
             )
         except Exception as e:
-            logger.exception(f"Reproduction failed with error:\n{str(e)}")
+            ctx_logger.exception(
+                f"Reproduction failed with error:\n{str(e)}",
+                destinations=["group", "run"],
+                _print=True,
+            )
 
         if metadata is None:
             ctx_logger.exception(

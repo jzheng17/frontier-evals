@@ -81,7 +81,7 @@ class ModalComputerInterface(ComputerInterface):
         chunks: list[bytes] = []
         async with await self._sandbox.open.aio(file, "rb") as f:
             while True:
-                chunk = await f.read.aio(8192)
+                chunk = await f.read.aio(1024 * 1024)  # 1MB chunks for large files
                 if not chunk:
                     break
                 chunks.append(chunk)
@@ -324,14 +324,84 @@ class ModalComputerRuntime(ComputerRuntime):
 
         return image
 
+    def _build_reproducer_image(self) -> modal.Image:
+        """Build the PaperBench reproducer image using Modal's programmatic API.
+
+        Extends the base pb-env image with reproducer-specific layers:
+        Python 3.11/3.12 via deadsnakes, build tools, and pip bootstrapping.
+        Mirrors reproducer.Dockerfile.
+        """
+        image = self._build_image()
+
+        # Build tools and ML dependency packages (reproducer.Dockerfile lines 9-16)
+        image = image.run_commands(
+            "export DEBIAN_FRONTEND=noninteractive && "
+            "apt-get update && apt-get install -y "
+            "software-properties-common wget curl unzip sudo "
+            "build-essential git cmake "
+            "libatlas-base-dev libblas-dev liblapack-dev libopenblas-dev "
+            "gfortran libsm6 libxext6 libxrender-dev "
+            "&& rm -rf /var/lib/apt/lists/*"
+        )
+
+        # Python 3.11 and 3.12 via deadsnakes PPA (reproducer.Dockerfile lines 19-25)
+        image = image.run_commands(
+            "export DEBIAN_FRONTEND=noninteractive && "
+            "add-apt-repository ppa:deadsnakes/ppa && "
+            "apt-get update && apt-get install -y "
+            "python3.11 python3.11-venv python3.11-dev "
+            "python3.12 python3.12-venv python3.12-dev "
+            "python3-pip "
+            "&& rm -rf /var/lib/apt/lists/*"
+        )
+
+        # update-alternatives for python version switching (reproducer.Dockerfile lines 28-29)
+        image = image.run_commands(
+            "update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 && "
+            "update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 2"
+        )
+
+        # Ensure python/pip symlinks (reproducer.Dockerfile lines 33-34)
+        image = image.run_commands(
+            "ln -sf /usr/bin/python3 /usr/bin/python && "
+            "ln -sf /usr/bin/pip3 /usr/bin/pip || true"
+        )
+
+        # Hard guarantee: python + pip CLIs exist (reproducer.Dockerfile lines 42-57)
+        image = image.run_commands(
+            "export DEBIAN_FRONTEND=noninteractive && "
+            "apt-get update && apt-get install -y --no-install-recommends "
+            "python3-pip python-is-python3 "
+            "&& rm -rf /var/lib/apt/lists/*"
+        )
+        image = image.run_commands(
+            "python3 -m pip --version || ("
+            "  python3 -m ensurepip --upgrade || true;"
+            "  python3 -m pip --version || ("
+            "    curl -fsSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py &&"
+            "    python3 /tmp/get-pip.py"
+            "  )"
+            ")"
+        )
+        image = image.run_commands(
+            "command -v pip || ln -sf $(command -v pip3) /usr/local/bin/pip || true"
+        )
+
+        return image
+
     @override
     @asynccontextmanager
     async def _start_computer(
         self, task: ComputerConfiguration
     ) -> AsyncGenerator[ModalComputerInterface, None]:
-        logger.info("Building Modal image", image_tag=self.image_tag)
-
-        image = self._build_image()
+        # Dispatch image builder based on task.docker_image.
+        docker_image = task.docker_image or ""
+        if "reproducer" in docker_image:
+            logger.info("Building Modal reproducer image", image_tag=docker_image)
+            image = self._build_reproducer_image()
+        else:
+            logger.info("Building Modal image", image_tag=self.image_tag)
+            image = self._build_image()
 
         # Resolve GPU configuration.
         gpu_config = None
