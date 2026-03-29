@@ -4,7 +4,7 @@ from nanoeval.evaluation import run
 from nanoeval.library_config import LibraryConfig
 from nanoeval.setup import nanoeval_entrypoint
 from paperbench.nano.eval import PaperBench
-from paperbench.nano.logging import paperbench_library_config, setup_logging
+from paperbench.nano.pb_logging import paperbench_library_config, setup_logging
 
 
 @chz.chz

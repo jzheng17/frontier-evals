@@ -33,7 +33,7 @@ from paperbench.nano.entrypoint import DefaultRunnerArgs
 from paperbench.nano.eval import (
     PaperBench,
 )
-from paperbench.nano.logging import PaperBenchLibraryConfig, setup_logging
+from paperbench.nano.pb_logging import PaperBenchLibraryConfig, setup_logging
 from paperbench.nano.structs import (
     JudgeConfig,
     ReproductionConfig,
