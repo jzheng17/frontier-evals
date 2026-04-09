@@ -210,11 +210,11 @@ class OpenHandsSolver(BasePBSolver):
         if self.openhands_version:
             install_cmds.append(
                 f"/opt/openhands-venv/bin/pip install openhands-sdk=={self.openhands_version} "
-                f"openhands-tools=={self.openhands_version}"
+                f"openhands-tools=={self.openhands_version} fastapi openai"
             )
         else:
             install_cmds.append(
-                "/opt/openhands-venv/bin/pip install openhands-sdk openhands-tools"
+                "/opt/openhands-venv/bin/pip install openhands-sdk openhands-tools fastapi openai"
             )
 
         for cmd in install_cmds:
@@ -278,6 +278,15 @@ class OpenHandsSolver(BasePBSolver):
                 output = result.output.decode("utf-8", errors="replace")
                 ctx_logger.info(
                     f"OpenHands agent finished (exit_code={result.exit_code})",
+                    destinations=["run"],
+                )
+                # Log runner stdout for debugging (first 3000 + last 3000 chars)
+                if len(output) > 6000:
+                    logged = output[:3000] + "\n...[TRUNCATED]...\n" + output[-3000:]
+                else:
+                    logged = output
+                ctx_logger.info(
+                    f"Runner output:\n{logged}",
                     destinations=["run"],
                 )
                 if result.exit_code != 0:
