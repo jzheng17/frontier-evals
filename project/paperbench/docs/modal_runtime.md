@@ -104,6 +104,17 @@ python tools/pb_run.py --env-config configs/modal_env.yaml -- \
     paperbench.solver.time_limit=3600
 ```
 
+## Why personal GHCR instead of upstream's?
+
+The original PaperBench repo does not publish pre-built images to any container
+registry. The standard workflow is `docker build` locally, which works for
+Alcatraz but not for cloud runtimes (Modal, GKE) that pull from a registry.
+
+The images at `ghcr.io/jzheng17/` are built from the **unmodified upstream
+Dockerfiles** (`Dockerfile.base` and `reproducer.Dockerfile`) — they are
+byte-identical to local builds. They exist only to enable registry-based
+workflows until an official registry is established.
+
 ## Image update policy
 
 The pre-built images should be rebuilt and pushed when:
