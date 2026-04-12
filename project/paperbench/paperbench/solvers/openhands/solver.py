@@ -1,19 +1,18 @@
 """OpenHands solver for PaperBench.
 
-Runs the OpenHands agent inside the sandbox container using the SDK with a
-multi-turn runner script. Unlike BasicAgent (which runs on the host and sends
+Runs the OpenHands agent inside the sandbox container using the official CLI
+(openhands.core.main). Unlike BasicAgent (which runs on the host and sends
 commands to the sandbox), OpenHands runs entirely inside the container — making
 it independent of the host's network connection after launch.
 
-The runner uses openhands-sdk's Conversation API in a loop: after each
-conversation.run() call, it checks whether the agent produced any files in
-/home/submission. If run() returns without tool use (single-turn exit), the
-runner re-prompts the agent to continue working. This matches Harbor's proven
-approach of keeping the agent loop alive until the task is complete or the
-timeout is reached.
+The CLI invocation matches Harbor's approach exactly: single-shot execution
+with RUNTIME=local (so OpenHands uses the sandbox filesystem directly, without
+Docker-in-Docker). OpenHands has its own internal agent loop that handles
+multi-turn tool use, so no external re-prompting wrapper is needed.
 """
 
 import asyncio
+import shlex
 import time
 
 import blobfile as bf
@@ -28,147 +27,15 @@ from paperbench.solvers.base import BasePBSolver
 
 logger = structlog.stdlib.get_logger(component=__name__)
 
-# Runner script that uses the SDK Conversation API with a multi-turn loop.
-# If conversation.run() returns after a single turn without tool use, the
-# runner sends a follow-up message to keep the agent working.
-_RUNNER_SCRIPT = r'''#!/usr/bin/env python3
-"""Multi-turn runner for OpenHands SDK inside PaperBench sandbox."""
-
-import json
-import os
-import sys
-import time
-from pathlib import Path
-
-
-def has_submission_files(submission_dir="/home/submission"):
-    """Check if the agent has produced any real files in the submission dir."""
-    p = Path(submission_dir)
-    if not p.exists():
-        return False
-    for item in p.rglob("*"):
-        if item.is_file() and ".git" not in item.parts:
-            return True
-    return False
-
-
-def main():
-    instruction_path = sys.argv[1] if len(sys.argv) > 1 else "/home/instructions.txt"
-    instruction = Path(instruction_path).read_text().strip()
-
-    model = os.environ.get("LLM_MODEL", "gpt-5-mini")
-    api_key = os.environ.get("LLM_API_KEY", "")
-    base_url = os.environ.get("LLM_BASE_URL", "") or os.environ.get("OPENAI_BASE_URL", "")
-    max_turns = int(os.environ.get("MAX_TURNS", "200"))
-
-    if not api_key:
-        print("ERROR: LLM_API_KEY not set", file=sys.stderr)
-        sys.exit(1)
-
-    from openhands.sdk import LLM, Agent, Conversation, Tool
-    from openhands.tools.terminal import TerminalTool
-    from openhands.tools.file_editor import FileEditorTool
-
-    llm_kwargs = {"model": model, "api_key": api_key}
-    if base_url:
-        llm_kwargs["base_url"] = base_url
-    llm = LLM(**llm_kwargs)
-
-    tools = [
-        Tool(name=TerminalTool.name),
-        Tool(name=FileEditorTool.name),
-    ]
-
-    agent = Agent(llm=llm, tools=tools)
-    workspace = "/home"
-    conversation = Conversation(agent=agent, workspace=workspace)
-
-    print(f"Starting OpenHands agent with model={model}, max_turns={max_turns}")
-    print(f"Instruction: {instruction[:200]}...")
-
-    start_time = time.time()
-
-    # Send initial instruction
-    conversation.send_message(instruction)
-
-    for turn in range(max_turns):
-        print(f"\n--- Turn {turn + 1}/{max_turns} ---")
-        try:
-            conversation.run()
-        except Exception as e:
-            print(f"conversation.run() raised: {e}")
-            # If the conversation errored, check if we have partial results
-            if has_submission_files():
-                print("Agent produced submission files before error, continuing to judge.")
-                break
-            # Otherwise try to continue
-            if turn >= 3:
-                print("Multiple failures, giving up.")
-                break
-            continue
-
-        elapsed = time.time() - start_time
-        print(f"Turn {turn + 1} completed. Elapsed: {elapsed:.0f}s")
-
-        # Check if agent has done meaningful work
-        if has_submission_files():
-            print("Submission files detected, agent appears to be working.")
-
-        # If conversation.run() returned quickly and this is an early turn,
-        # re-prompt to keep the agent working
-        if turn == 0:
-            # First turn: the agent may have just acknowledged the task.
-            # Send a follow-up to get it started on actual tool use.
-            conversation.send_message(
-                "Please start working on the task now. Use the terminal to "
-                "explore the available files, read the paper, and begin "
-                "implementing the reproduction. Work in /home/submission/."
-            )
-        # After turn 1, let the conversation flow naturally.
-        # If run() returns, the agent decided it's done.
-        else:
-            # Check if agent explicitly finished or just stopped
-            if has_submission_files():
-                print("Agent has submission files and completed a turn. Checking if done...")
-                # Give the agent one more chance if it just made progress
-                conversation.send_message(
-                    "Are you done with the task? If not, please continue working. "
-                    "If you are done, please confirm by saying 'DONE'."
-                )
-            else:
-                # No files yet, keep pushing
-                conversation.send_message(
-                    "Please continue working on the task. Use the terminal tool "
-                    "to run commands and the file editor to create files."
-                )
-
-    # Save metrics
-    try:
-        token_usage = llm.metrics.accumulated_token_usage
-        metrics = {
-            "prompt_tokens": token_usage.prompt_tokens if token_usage else 0,
-            "completion_tokens": token_usage.completion_tokens if token_usage else 0,
-            "cost_usd": llm.metrics.accumulated_cost,
-            "turns": turn + 1,
-            "elapsed_seconds": time.time() - start_time,
-        }
-    except Exception:
-        metrics = {"turns": turn + 1, "elapsed_seconds": time.time() - start_time}
-
-    metrics_path = Path("/home/logs/openhands_metrics.json")
-    metrics_path.parent.mkdir(parents=True, exist_ok=True)
-    metrics_path.write_text(json.dumps(metrics, indent=2))
-    print(f"Agent completed after {turn + 1} turns. Metrics: {json.dumps(metrics)}")
-
-
-if __name__ == "__main__":
-    main()
-'''
-
 
 @chz.chz
 class OpenHandsSolver(BasePBSolver):
-    """PaperBench solver that runs OpenHands SDK inside the sandbox container."""
+    """PaperBench solver that runs OpenHands CLI inside the sandbox container.
+
+    Aligned with Harbor's OpenHands integration: installs openhands-ai (full
+    package), invokes via `python -m openhands.core.main --task=...`, and sets
+    RUNTIME=local to use the sandbox filesystem directly.
+    """
 
     llm_model: str = chz.field(
         default="gpt-5-mini",
@@ -188,7 +55,7 @@ class OpenHandsSolver(BasePBSolver):
     )
     openhands_version: str | None = chz.field(
         default=None,
-        doc="Optional specific version of openhands-sdk to install",
+        doc="Optional specific version of openhands-ai to install",
     )
 
     @override
@@ -196,11 +63,11 @@ class OpenHandsSolver(BasePBSolver):
         return "openhands"
 
     async def _setup_computer(self, computer: ComputerInterface, task: PBTask) -> None:
-        """Install OpenHands SDK in the sandbox."""
+        """Install OpenHands CLI in the sandbox."""
         ctx_logger = logger.bind(
             run_group_id=task.run_group_id, run_id=task.run_id, runs_dir=task.runs_dir
         )
-        ctx_logger.info("Installing OpenHands SDK in sandbox...", destinations=["run"])
+        ctx_logger.info("Installing OpenHands in sandbox...", destinations=["run"])
 
         # Create a venv to avoid conflicts with task dependencies
         install_cmds = [
@@ -209,12 +76,11 @@ class OpenHandsSolver(BasePBSolver):
         ]
         if self.openhands_version:
             install_cmds.append(
-                f"/opt/openhands-venv/bin/pip install openhands-sdk=={self.openhands_version} "
-                f"openhands-tools=={self.openhands_version} fastapi openai"
+                f"/opt/openhands-venv/bin/pip install openhands-ai=={self.openhands_version}"
             )
         else:
             install_cmds.append(
-                "/opt/openhands-venv/bin/pip install openhands-sdk openhands-tools fastapi openai"
+                "/opt/openhands-venv/bin/pip install openhands-ai"
             )
 
         for cmd in install_cmds:
@@ -223,17 +89,11 @@ class OpenHandsSolver(BasePBSolver):
                 output = result.output.decode("utf-8", errors="replace")
                 raise RuntimeError(f"OpenHands install failed: {cmd}\n{output}")
 
-        # Upload the runner script
-        await computer.upload(
-            _RUNNER_SCRIPT.encode("utf-8"),
-            "/opt/openhands-venv/run_agent.py",
-        )
-
-        ctx_logger.info("OpenHands SDK installed successfully", destinations=["run"])
+        ctx_logger.info("OpenHands installed successfully", destinations=["run"])
 
     @override
     async def _run_agent(self, computer: ComputerInterface, task: PBTask) -> AgentOutput:
-        """Run the OpenHands agent inside the sandbox."""
+        """Run the OpenHands agent inside the sandbox via CLI."""
         ctx_logger = logger.bind(
             run_group_id=task.run_group_id, run_id=task.run_id, runs_dir=task.runs_dir
         )
@@ -246,7 +106,10 @@ class OpenHandsSolver(BasePBSolver):
                 f"API key env var {self.llm_api_key_env} not set on host"
             )
 
-        # Build env vars for the agent process
+        # Read instruction from the file that BasePBSolver writes
+        instruction_path = "/home/instructions.txt"
+
+        # Build env vars matching Harbor's OpenHands integration
         base_url = (
             self.llm_base_url
             or os.environ.get("LLM_BASE_URL", "")
@@ -255,15 +118,40 @@ class OpenHandsSolver(BasePBSolver):
         env_parts = [
             f"LLM_MODEL={self.llm_model}",
             f"LLM_API_KEY={api_key}",
+            # RUNTIME=local: use sandbox filesystem directly, no Docker-in-Docker
+            "RUNTIME=local",
+            "RUN_AS_OPENHANDS=false",
+            # Disable browser and prompt extensions (matching Harbor)
+            "AGENT_ENABLE_PROMPT_EXTENSIONS=false",
+            "AGENT_ENABLE_BROWSING=false",
+            "ENABLE_BROWSER=false",
+            "SANDBOX_ENABLE_AUTO_LINT=true",
+            "SKIP_DEPENDENCY_CHECK=1",
+            # Trajectory logging
+            "SAVE_TRAJECTORY_PATH=/home/logs/openhands.trajectory.json",
+            "FILE_STORE=local",
+            "FILE_STORE_PATH=/home/logs/",
+            "LLM_LOG_COMPLETIONS=true",
+            "LLM_LOG_COMPLETIONS_FOLDER=/home/logs/completions/",
         ]
         if base_url:
             env_parts.append(f"LLM_BASE_URL={base_url}")
 
+        # Read instruction and pass via --task flag (matching Harbor)
+        read_instruction_cmd = f"cat {instruction_path}"
+        result = await computer.send_shell_command(read_instruction_cmd)
+        instruction = result.output.decode("utf-8", errors="replace").strip()
+        escaped_instruction = shlex.quote(instruction)
+
         env_str = " ".join(env_parts)
         run_cmd = (
-            f"{env_str} /opt/openhands-venv/bin/python "
-            f"/opt/openhands-venv/run_agent.py /home/instructions.txt"
+            f"{env_str} /opt/openhands-venv/bin/python -m openhands.core.main"
+            f" --task={escaped_instruction}"
+            f" 2>&1 | tee /home/logs/openhands.txt"
         )
+
+        # Ensure logs directory exists
+        await computer.send_shell_command("mkdir -p /home/logs/completions")
 
         ctx_logger.info(
             f"Starting OpenHands agent (model={self.llm_model}, "
