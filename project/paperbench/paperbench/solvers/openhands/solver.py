@@ -9,6 +9,13 @@ The CLI invocation matches Harbor's approach exactly: single-shot execution
 with RUNTIME=local (so OpenHands uses the sandbox filesystem directly, without
 Docker-in-Docker). OpenHands has its own internal agent loop that handles
 multi-turn tool use, so no external re-prompting wrapper is needed.
+
+Critical env vars aligned with Harbor (src/harbor/agents/installed/openhands.py):
+  - SANDBOX_VOLUMES=${PWD}:/workspace:rw  — exposes task files to OpenHands workspace
+  - SU_TO_USER=false                      — avoids user-switching in local runtime
+  - USER=$(id -un)                        — sets agent identity for file operations
+Without these, the agent cannot reliably find paper/instruction files in the
+sandbox, leading to degraded task performance.
 """
 
 import asyncio
@@ -121,6 +128,11 @@ class OpenHandsSolver(BasePBSolver):
             # RUNTIME=local: use sandbox filesystem directly, no Docker-in-Docker
             "RUNTIME=local",
             "RUN_AS_OPENHANDS=false",
+            # Workspace: mount CWD so OpenHands can find paper/instruction files
+            "SANDBOX_VOLUMES=${PWD}:/workspace:rw",
+            # User identity (required for local runtime file operations)
+            "SU_TO_USER=false",
+            "USER=$(id -un)",
             # Disable browser and prompt extensions (matching Harbor)
             "AGENT_ENABLE_PROMPT_EXTENSIONS=false",
             "AGENT_ENABLE_BROWSING=false",
@@ -147,7 +159,7 @@ class OpenHandsSolver(BasePBSolver):
         run_cmd = (
             f"{env_str} /opt/openhands-venv/bin/python -m openhands.core.main"
             f" --task={escaped_instruction}"
-            f" 2>&1 | tee /home/logs/openhands.txt"
+            f" 2>&1 </dev/null | stdbuf -oL tee /home/logs/openhands.txt"
         )
 
         # Ensure logs directory exists
