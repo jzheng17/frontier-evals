@@ -172,7 +172,16 @@ class BasicAgentSolver(BasePBSolver):
 
                 if tool_calls:
                     for tool_call in tool_calls:
-                        handled = await handle_tool_call(tool_call, tools, task, computer)
+                        handled = await handle_tool_call(
+                            tool_call,
+                            tools,
+                            task,
+                            computer,
+                            start_time=start_time,
+                            total_retry_time=total_retry_time,
+                            time_limit=self.time_limit,
+                            use_real_time_limit=self.use_real_time_limit,
+                        )
                         if handled is None:  # signal that submit was called; exit.
                             return num_steps
                         messages.append(handled)

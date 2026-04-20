@@ -357,11 +357,23 @@ def handle_sonnet_limits(
 
 
 async def handle_tool_call(
-    basic_agent_tool_call: ToolCall, tools: list[Tool], task: PBTask, computer: ComputerInterface
+    basic_agent_tool_call: ToolCall,
+    tools: list[Tool],
+    task: PBTask,
+    computer: ComputerInterface,
+    start_time: float | None = None,
+    total_retry_time: float = 0.0,
+    time_limit: int | None = None,
+    use_real_time_limit: bool = True,
 ) -> ChatCompletionToolMessageParam | None:
     """
     Parses and executes a tool call from the agent.
     Returns None if the tool call is "submit", otherwise returns the tool response.
+
+    When timing context is provided (start_time, time_limit), each tool call
+    receives a per-command timeout equal to the remaining agent time. This
+    prevents individual shell commands from hanging indefinitely on Modal
+    where asyncio.timeout() cannot cancel gRPC I/O.
     """
     ctx_logger = logger.bind(
         run_group_id=task.run_group_id, run_id=task.run_id, runs_dir=task.runs_dir
@@ -370,9 +382,19 @@ async def handle_tool_call(
         ctx_logger.info("Agent used submit tool. Finishing run....", destinations=["run"])
         return None
     else:
+        # Calculate remaining time for per-command timeout enforcement.
+        remaining_sec: int | None = None
+        if start_time is not None and time_limit is not None:
+            elapsed = time.time() - start_time
+            if use_real_time_limit:
+                elapsed -= total_retry_time
+            remaining_sec = max(30, int(time_limit - elapsed))
+
         tool = next(t for t in tools if t.name() == basic_agent_tool_call.name)
         try:
-            result = await tool.execute(computer, **basic_agent_tool_call.arguments)
+            args = {**basic_agent_tool_call.arguments}
+            args.pop("_timeout_sec", None)  # never let agent control this
+            result = await tool.execute(computer, _timeout_sec=remaining_sec, **args)
         except Exception as e:
             result = f"Error executing tool: {e}"
         return {

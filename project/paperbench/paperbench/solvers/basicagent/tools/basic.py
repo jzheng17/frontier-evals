@@ -1,3 +1,4 @@
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -5,6 +6,19 @@ from openai.types.responses import FunctionToolParam
 
 from nanoeval.solvers.computer_tasks.code_execution_interface import ComputerInterface
 from paperbench.solvers.basicagent.tools.base import Tool
+
+
+def _wrap_with_timeout(cmd: str, timeout_sec: int | None) -> str:
+    """Wrap a shell command with ``timeout`` for server-side enforcement.
+
+    On Modal, ``asyncio.timeout()`` cannot cancel gRPC I/O, so a hung
+    ``send_shell_command()`` blocks until ``sandbox_timeout``.  Wrapping
+    with the coreutils ``timeout`` utility ensures the process is killed
+    inside the sandbox after *timeout_sec* seconds.
+    """
+    if timeout_sec is None or timeout_sec <= 0:
+        return cmd
+    return f"timeout --kill-after=10 {timeout_sec} bash -c {shlex.quote(cmd)}"
 
 
 class SubmitTool(Tool):
@@ -39,9 +53,11 @@ class BashTool(Tool):
     def name(self) -> str:
         return "bash"
 
-    async def execute(self, computer: ComputerInterface, cmd: str) -> str:
+    async def execute(
+        self, computer: ComputerInterface, cmd: str, _timeout_sec: int | None = None
+    ) -> str:
         result = await computer.send_shell_command(
-            cmd=cmd,
+            cmd=_wrap_with_timeout(cmd, _timeout_sec),
         )
         return result.output.decode("utf-8").strip()
 
@@ -69,11 +85,15 @@ class PythonTool(Tool):
     def name(self) -> str:
         return "python-tool"  # "python" is reserved by OpenAI
 
-    async def execute(self, computer: ComputerInterface, code: str) -> str:
+    async def execute(
+        self, computer: ComputerInterface, code: str, _timeout_sec: int | None = None
+    ) -> str:
         result = await computer.send_shell_command("mktemp -d")
         tmp_dir = result.output.decode("utf-8").strip()
         await computer.upload(code.encode("utf-8"), str(Path(tmp_dir) / "code.py"))
-        result = await computer.send_shell_command("python3 code.py")
+        result = await computer.send_shell_command(
+            _wrap_with_timeout(f"cd {shlex.quote(tmp_dir)} && python3 code.py", _timeout_sec)
+        )
         return result.output.decode("utf-8").strip()
 
     def get_oai_tool_call(self) -> FunctionToolParam:
@@ -111,7 +131,12 @@ class ReadFileChunk(Tool):
         return "read_file_chunk"
 
     async def execute(
-        self, computer: ComputerInterface, file: str, start_line: int = 1, max_lines: int = 50
+        self,
+        computer: ComputerInterface,
+        file: str,
+        start_line: int = 1,
+        max_lines: int = 50,
+        _timeout_sec: int | None = None,
     ) -> str:
         if start_line < 1:
             return "ERROR: start_line must be >= 1"
@@ -124,7 +149,9 @@ class ReadFileChunk(Tool):
 
         try:
             # Read the file
-            result = await computer.send_shell_command(f"cat {file}")
+            result = await computer.send_shell_command(
+                _wrap_with_timeout(f"cat {file}", _timeout_sec)
+            )
             content = result.output.decode("utf-8").strip()
 
             # Split into lines
@@ -195,6 +222,7 @@ class SearchFile(Tool):
         context_lines: int = 2,
         max_matches: int = 5,
         page: int = 1,
+        _timeout_sec: int | None = None,
     ) -> str:
         if not query:
             return "ERROR: Query cannot be empty."
@@ -207,7 +235,9 @@ class SearchFile(Tool):
 
         try:
             # Read the file
-            result = await computer.send_shell_command(f"cat {file}")
+            result = await computer.send_shell_command(
+                _wrap_with_timeout(f"cat {file}", _timeout_sec)
+            )
             content = result.output.decode("utf-8").strip()
 
             # Split into lines
