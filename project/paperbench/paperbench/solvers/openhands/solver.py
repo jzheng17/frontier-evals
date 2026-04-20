@@ -156,8 +156,13 @@ class OpenHandsSolver(BasePBSolver):
         escaped_instruction = shlex.quote(instruction)
 
         env_str = " ".join(env_parts)
+        # Shell `timeout` wraps the agent process to ensure it's killed server-side
+        # when time_limit expires. Without this, asyncio.timeout() fires but can't
+        # cancel Modal's send_shell_command(), leaving the process running until
+        # sandbox_timeout. Exit code 137 = killed by timeout (SIGKILL after grace).
         run_cmd = (
-            f"{env_str} /opt/openhands-venv/bin/python -m openhands.core.main"
+            f"{env_str} timeout --kill-after=30 {self.time_limit} "
+            f"/opt/openhands-venv/bin/python -m openhands.core.main"
             f" --task={escaped_instruction}"
             f" 2>&1 </dev/null | stdbuf -oL tee /home/logs/openhands.txt"
         )

@@ -106,8 +106,12 @@ class ModalComputerInterface(ComputerInterface):
 
     # -- internal helpers --
 
-    async def _exec_raw(self, cmd: str) -> ExecutionResult:
-        process = await self._sandbox.exec.aio("bash", "-c", cmd)
+    async def _exec_raw(
+        self, cmd: str, timeout: int | None = None
+    ) -> ExecutionResult:
+        process = await self._sandbox.exec.aio(
+            "bash", "-c", cmd, timeout=timeout
+        )
         stdout = await process.stdout.read.aio()
         stderr = await process.stderr.read.aio()
         exit_code = await process.wait.aio()
