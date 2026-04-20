@@ -12,6 +12,7 @@ Usage via chz entrypoint:
 
 from __future__ import annotations
 
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncGenerator
@@ -161,7 +162,7 @@ class ModalComputerRuntime(ComputerRuntime):
     )
     app_name: str = chz.field(
         default="__paperbench__",
-        doc="Modal App name. Sandboxes are grouped under this app.",
+        doc="Modal App name prefix. A unique suffix is appended per instance to avoid sandbox interference between concurrent runs.",
     )
 
     # -- Network --
@@ -423,9 +424,11 @@ class ModalComputerRuntime(ComputerRuntime):
         # Determine network blocking.
         should_block = self.block_network or (task.network_mode == NetworkMode.NONE)
 
-        # Create the Modal App.
+        # Create the Modal App with a unique name per sandbox to prevent
+        # concurrent runs from interfering with each other's sandboxes.
+        unique_app_name = f"{self.app_name}-{uuid.uuid4().hex[:8]}"
         app = await modal.App.lookup.aio(
-            name=self.app_name,
+            name=unique_app_name,
             create_if_missing=True,
         )
 
