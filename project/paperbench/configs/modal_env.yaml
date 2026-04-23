@@ -13,7 +13,6 @@ version: 1
 defaults:
   # Modal-specific defaults (these are fields on ModalComputerRuntime, not ClusterConfig).
   sandbox_timeout: 14400     # 4 hours max sandbox lifetime (was 86400)
-  app_name: "__paperbench__"
   enable_docker_daemon: false
   # Environment variables injected into every sandbox.
   environment:
