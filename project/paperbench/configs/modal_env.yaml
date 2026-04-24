@@ -15,9 +15,14 @@ defaults:
   sandbox_timeout: 14400     # 4 hours max sandbox lifetime (was 86400)
   enable_docker_daemon: false
   # Environment variables injected into every sandbox.
+  # OPENAI_BASE_URL is intentionally omitted: when LLM_BASE_URL is unset,
+  # `${LLM_BASE_URL:-}` expands to the empty string, which makes the OpenAI
+  # SDK throw httpcore.UnsupportedProtocol ("Request URL is missing an
+  # 'http://' or 'https://' protocol."). This killed OpenHands in ~2.5 min
+  # with score 0.0 on 2026-04-24. When a proxy is actually needed, add an
+  # explicit entry instead of relying on empty-string fallback.
   environment:
     OPENAI_API_KEY: ${OPENAI_API_KEY}
-    OPENAI_BASE_URL: ${LLM_BASE_URL:-}
 
 # Component-level configs.
 # Image is built programmatically by ModalComputerRuntime._build_image().
