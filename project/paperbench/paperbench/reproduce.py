@@ -226,22 +226,30 @@ async def reproduce_on_computer(
         path_to_output = submission_path.replace(".tar.gz", "_executed_metadata.json")
         bf.write_bytes(path_to_output, json.dumps(repro_metadata.to_dict()).encode("utf-8"))
 
-        # Step 4: Save the reproduced submission itself
+        # Step 4: Save the reproduced submission itself.
+        # Wrap in try/except so a download hang/timeout doesn't lose the
+        # reproduction metadata (which is needed for judging to proceed).
         timestamp = Path(submission_path).parts[-2]
         upload_from = output_cluster_path / "submission_executed.tar.gz"
         upload_to = bf.join(run_dir, "submissions", timestamp, "submission_executed.tar.gz")
-        await tar_and_extract_from_computer(
-            computer=computer,
-            dir_path_on_computer=submission_cluster_path,
-            tar_path_on_computer=upload_from,
-            tar_path_on_target=upload_to,
-            run_group_id=run_group_id,
-            runs_dir=runs_dir,
-            run_id=run_id,
-            max_file_size="10M",
-        )
-
-        ctx_logger.info(f"Reproduced dir has been written: {upload_to}")
+        try:
+            await tar_and_extract_from_computer(
+                computer=computer,
+                dir_path_on_computer=submission_cluster_path,
+                tar_path_on_computer=upload_from,
+                tar_path_on_target=upload_to,
+                run_group_id=run_group_id,
+                runs_dir=runs_dir,
+                run_id=run_id,
+                max_file_size="10M",
+            )
+            ctx_logger.info(f"Reproduced dir has been written: {upload_to}")
+        except Exception as e:
+            ctx_logger.warning(
+                f"Failed to download reproduced submission (judging will use "
+                f"original submission): {e}",
+                destinations=["run"],
+            )
 
         time_end = time.time()
         ctx_logger.info(f"Reproduction completed in {time_end - time_start:.2f} seconds.")

@@ -56,6 +56,11 @@ class OpenHandsSolver(BasePBSolver):
         default=None,
         doc="Optional base URL for the LLM API (for parity proxy, etc.)",
     )
+    max_iterations: int = chz.field(
+        default=500,
+        doc="Maximum number of agent iterations (OpenHands default: 500). "
+        "Aligned with Harbor's MAX_ITERATIONS env var support.",
+    )
     time_limit: int = chz.field(
         default=3600,
         doc="Time limit in seconds for the agent run (default: 1 hour)",
@@ -125,6 +130,8 @@ class OpenHandsSolver(BasePBSolver):
         env_parts = [
             f"LLM_MODEL={self.llm_model}",
             f"LLM_API_KEY={api_key}",
+            # Max iterations: aligned with Harbor's MAX_ITERATIONS env var
+            f"MAX_ITERATIONS={self.max_iterations}",
             # RUNTIME=local: use sandbox filesystem directly, no Docker-in-Docker
             "RUNTIME=local",
             "RUN_AS_OPENHANDS=false",
@@ -160,11 +167,19 @@ class OpenHandsSolver(BasePBSolver):
         # when time_limit expires. Without this, asyncio.timeout() fires but can't
         # cancel Modal's send_shell_command(), leaving the process running until
         # sandbox_timeout. Exit code 137 = killed by timeout (SIGKILL after grace).
+        #
+        # Redirect to file instead of piping through `tee`. With RUNTIME=local,
+        # OpenHands spawns background children (Jupyter kernel, event server) that
+        # inherit stdout. If those keep the pipe open after the main process exits,
+        # Modal's process.stdout.read() blocks indefinitely (gRPC exec has no
+        # per-read timeout), causing a spurious timeout. File redirect avoids this
+        # because background children inherit the file fd, not the Modal exec pipe.
+        # Matches Harbor's fix (src/harbor/agents/installed/openhands.py:1001-1018).
         run_cmd = (
             f"{env_str} timeout --kill-after=30 {self.time_limit} "
             f"/opt/openhands-venv/bin/python -m openhands.core.main"
             f" --task={escaped_instruction}"
-            f" 2>&1 </dev/null | stdbuf -oL tee /home/logs/openhands.txt"
+            f" </dev/null >/home/logs/openhands.txt 2>&1"
         )
 
         # Ensure logs directory exists

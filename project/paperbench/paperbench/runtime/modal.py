@@ -12,6 +12,7 @@ Usage via chz entrypoint:
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -78,15 +79,75 @@ class ModalComputerInterface(ComputerInterface):
             await f.write.aio(file)
 
     @override
-    async def download(self, file: str) -> bytes:
-        chunks: list[bytes] = []
-        async with await self._sandbox.open.aio(file, "rb") as f:
-            while True:
-                chunk = await f.read.aio(1024 * 1024)  # 1MB chunks for large files
-                if not chunk:
-                    break
-                chunks.append(chunk)
-        return b"".join(chunks)
+    async def download(self, file: str, timeout: float = 600, max_retries: int = 3) -> bytes:
+        """Download a file from the sandbox with retries and timeout.
+
+        Tries Sandbox.filesystem API first (preferred), then falls back to
+        chunked FileIO.read. Each method is retried up to max_retries times
+        with exponential backoff on timeout/transient errors.
+        """
+        has_filesystem_api = hasattr(self._sandbox, "filesystem")
+        last_exc: Exception | None = None
+
+        for attempt in range(1, max_retries + 1):
+            # Try the newer filesystem API first
+            if has_filesystem_api:
+                try:
+                    data = await asyncio.wait_for(
+                        self._sandbox.filesystem.read_bytes.aio(file),
+                        timeout=timeout,
+                    )
+                    return data
+                except asyncio.TimeoutError as e:
+                    last_exc = e
+                    logger.warning(
+                        "Download timed out via filesystem API",
+                        file=file, timeout=timeout,
+                        attempt=attempt, max_retries=max_retries,
+                    )
+                except Exception as e:
+                    last_exc = e
+                    logger.warning(
+                        "Download failed via filesystem API",
+                        file=file, error=str(e),
+                        attempt=attempt, max_retries=max_retries,
+                    )
+
+            # Fallback: chunked read
+            try:
+                chunks: list[bytes] = []
+
+                async def _chunked_read() -> bytes:
+                    async with await self._sandbox.open.aio(file, "rb") as f:
+                        while True:
+                            chunk = await f.read.aio(1024 * 1024)
+                            if not chunk:
+                                break
+                            chunks.append(chunk)
+                    return b"".join(chunks)
+
+                return await asyncio.wait_for(_chunked_read(), timeout=timeout)
+            except asyncio.TimeoutError as e:
+                last_exc = e
+                logger.warning(
+                    "Download timed out via chunked read",
+                    file=file, timeout=timeout,
+                    attempt=attempt, max_retries=max_retries,
+                )
+            except Exception as e:
+                last_exc = e
+                logger.warning(
+                    "Download failed via chunked read",
+                    file=file, error=str(e),
+                    attempt=attempt, max_retries=max_retries,
+                )
+
+            if attempt < max_retries:
+                backoff = 2 ** attempt
+                logger.info(f"Retrying download in {backoff}s...", file=file)
+                await asyncio.sleep(backoff)
+
+        raise last_exc or RuntimeError(f"Download failed after {max_retries} retries: {file}")
 
     @override
     async def send_shell_command(
