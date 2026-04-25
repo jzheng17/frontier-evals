@@ -91,9 +91,7 @@ class OpenHandsSolver(BasePBSolver):
                 f"/opt/openhands-venv/bin/pip install openhands-ai=={self.openhands_version}"
             )
         else:
-            install_cmds.append(
-                "/opt/openhands-venv/bin/pip install openhands-ai"
-            )
+            install_cmds.append("/opt/openhands-venv/bin/pip install openhands-ai")
 
         for cmd in install_cmds:
             result = await computer.send_shell_command(cmd)
@@ -114,9 +112,7 @@ class OpenHandsSolver(BasePBSolver):
 
         api_key = os.environ.get(self.llm_api_key_env, "")
         if not api_key:
-            raise RuntimeError(
-                f"API key env var {self.llm_api_key_env} not set on host"
-            )
+            raise RuntimeError(f"API key env var {self.llm_api_key_env} not set on host")
 
         # Read instruction from the file that BasePBSolver writes
         instruction_path = "/home/instructions.txt"
@@ -186,39 +182,80 @@ class OpenHandsSolver(BasePBSolver):
         await computer.send_shell_command("mkdir -p /home/logs/completions")
 
         ctx_logger.info(
-            f"Starting OpenHands agent (model={self.llm_model}, "
-            f"time_limit={self.time_limit}s)",
+            f"Starting OpenHands agent (model={self.llm_model}, time_limit={self.time_limit}s)",
             destinations=["run"],
         )
 
+        # Retry the OH invocation up to MAX_STARTUP_RETRIES times if the
+        # agent crashes during startup (action_execution_server fails to bind
+        # in time → tenacity.RetryError + httpcore.ConnectError + 0 session
+        # events). Observed on 2026-04-25 for bbox + robust-clip OH runs:
+        # both ran ~5min before crashing in `local_runtime._wait_until_alive`
+        # without OH ever completing a single agent step. Retrying gives the
+        # sandbox a fresh chance with new TCP ports / process state.
+        MAX_STARTUP_RETRIES = 3
+        STARTUP_FAILURE_THRESHOLD_SEC = 300  # crashes within 5min are likely startup
         start_time = time.time()
-        try:
-            async with asyncio.timeout(self.time_limit):
-                result = await computer.send_shell_command(run_cmd)
-                output = result.output.decode("utf-8", errors="replace")
-                ctx_logger.info(
-                    f"OpenHands agent finished (exit_code={result.exit_code})",
-                    destinations=["run"],
-                )
-                # Log runner stdout for debugging (first 3000 + last 3000 chars)
-                if len(output) > 6000:
-                    logged = output[:3000] + "\n...[TRUNCATED]...\n" + output[-3000:]
-                else:
-                    logged = output
-                ctx_logger.info(
-                    f"Runner output:\n{logged}",
-                    destinations=["run"],
-                )
-                if result.exit_code != 0:
-                    ctx_logger.warning(
-                        f"OpenHands agent exited with non-zero code: {output[-500:]}",
+        result = None
+        output = ""
+        for attempt in range(1, MAX_STARTUP_RETRIES + 1):
+            attempt_start = time.time()
+            try:
+                async with asyncio.timeout(self.time_limit):
+                    result = await computer.send_shell_command(run_cmd)
+                    output = result.output.decode("utf-8", errors="replace")
+                    ctx_logger.info(
+                        f"OpenHands agent finished (exit_code={result.exit_code})",
                         destinations=["run"],
                     )
-        except asyncio.TimeoutError:
-            ctx_logger.info(
-                f"OpenHands agent timed out after {self.time_limit}s",
-                destinations=["run"],
+                    # Log runner stdout for debugging (first 3000 + last 3000 chars)
+                    if len(output) > 6000:
+                        logged = output[:3000] + "\n...[TRUNCATED]...\n" + output[-3000:]
+                    else:
+                        logged = output
+                    ctx_logger.info(
+                        f"Runner output:\n{logged}",
+                        destinations=["run"],
+                    )
+                    if result.exit_code != 0:
+                        ctx_logger.warning(
+                            f"OpenHands agent exited with non-zero code: {output[-500:]}",
+                            destinations=["run"],
+                        )
+            except asyncio.TimeoutError:
+                ctx_logger.info(
+                    f"OpenHands agent timed out after {self.time_limit}s",
+                    destinations=["run"],
+                )
+                break
+
+            # Detect startup failure: short runtime + ConnectError signature
+            attempt_runtime = time.time() - attempt_start
+            oh_log_check = await computer.send_shell_command(
+                "grep -c 'tenacity.RetryError\\|ConnectError' /home/logs/openhands.txt 2>/dev/null || echo 0"
             )
+            connect_err_count = int(
+                oh_log_check.output.decode("utf-8", errors="replace").strip() or "0"
+            )
+            if (
+                attempt_runtime < STARTUP_FAILURE_THRESHOLD_SEC
+                and connect_err_count > 0
+                and attempt < MAX_STARTUP_RETRIES
+            ):
+                ctx_logger.warning(
+                    f"OpenHands action_execution_server failed to start "
+                    f"(attempt {attempt}/{MAX_STARTUP_RETRIES}, "
+                    f"runtime={attempt_runtime:.0f}s, ConnectError detected). "
+                    f"Sleeping 30s and retrying with fresh ports.",
+                    destinations=["run"],
+                )
+                # Clear the failed log so the next attempt starts clean
+                await computer.send_shell_command(
+                    "mv /home/logs/openhands.txt /home/logs/openhands.txt.startup_fail.${RANDOM} 2>/dev/null || true"
+                )
+                await asyncio.sleep(30)
+                continue
+            break
 
         end_time = time.time()
         runtime = end_time - start_time
@@ -241,9 +278,7 @@ class OpenHandsSolver(BasePBSolver):
             status_exists=False,
         )
 
-    async def _create_submission_tar(
-        self, computer: ComputerInterface, task: PBTask
-    ) -> None:
+    async def _create_submission_tar(self, computer: ComputerInterface, task: PBTask) -> None:
         """Create and download the submission tarball from the sandbox."""
         ctx_logger = logger.bind(
             run_group_id=task.run_group_id, run_id=task.run_id, runs_dir=task.runs_dir
