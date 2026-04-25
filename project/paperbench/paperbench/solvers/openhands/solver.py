@@ -128,6 +128,11 @@ class OpenHandsSolver(BasePBSolver):
             f"LLM_API_KEY={api_key}",
             # Max iterations: aligned with Harbor's MAX_ITERATIONS env var
             f"MAX_ITERATIONS={self.max_iterations}",
+            # Reasoning effort: aligned with Harbor's OH integration (which sets
+            # LLM_REASONING_EFFORT=high by default). Without this, gpt-5/gpt-5.2
+            # default to "medium", which produced systematically lower scores
+            # (Harbor OH SSC mean 0.74 vs upstream 0.50 before this fix).
+            "LLM_REASONING_EFFORT=high",
             # RUNTIME=local: use sandbox filesystem directly, no Docker-in-Docker
             "RUNTIME=local",
             "RUN_AS_OPENHANDS=false",
