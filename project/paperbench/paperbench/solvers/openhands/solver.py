@@ -161,6 +161,22 @@ class OpenHandsSolver(BasePBSolver):
         read_instruction_cmd = f"cat {instruction_path}"
         result = await computer.send_shell_command(read_instruction_cmd)
         instruction = result.output.decode("utf-8", errors="replace").strip()
+        # OH-only mitigation for the auto_continue trap (failure mode D).
+        # When agent says "I'm done" in a message instead of calling the
+        # `finish` tool, OH transitions to AWAITING_USER_INPUT and
+        # `auto_continue_response` re-prompts. Agent typically declines,
+        # wasting time and producing no work. Symmetric with Harbor's
+        # openhands.py mitigation; framework-only fix that does NOT change
+        # task design.
+        instruction = instruction + (
+            "\n\n"
+            "IMPORTANT (OpenHands-specific): To end the task you MUST call "
+            "the `finish` tool with your end_message. Do not just say 'I'm "
+            "done' or 'task complete' in a regular message — that creates "
+            "infinite re-prompt loops because the framework will ask "
+            "'please continue' and you'll be stuck. Always invoke the "
+            "finish tool to signal completion.\n"
+        )
         escaped_instruction = shlex.quote(instruction)
 
         env_str = " ".join(env_parts)
