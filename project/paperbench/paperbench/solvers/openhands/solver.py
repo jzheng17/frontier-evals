@@ -104,6 +104,17 @@ class OpenHandsSolver(BasePBSolver):
             "/opt/openhands-venv/bin/pip install --upgrade 'binaryornot>=0.5'"
         )
 
+        # OpenHands microagents bootstrap reads /home/.openhands_instructions
+        # via FileReadAction → action_execution_server.is_binary(path) which
+        # raises FileNotFoundError if the file doesn't exist. The error
+        # bubbles up as a 500, RequestHTTPError kills the entire process
+        # before any LLM call. Pre-creating the file as empty satisfies
+        # is_binary(); the agent gets an empty microagents list and
+        # proceeds normally.
+        install_cmds.append(
+            "mkdir -p /home/.openhands && touch /home/.openhands_instructions"
+        )
+
         for cmd in install_cmds:
             result = await computer.send_shell_command(cmd)
             if result.exit_code != 0:
