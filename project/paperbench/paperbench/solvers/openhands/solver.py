@@ -93,6 +93,17 @@ class OpenHandsSolver(BasePBSolver):
         else:
             install_cmds.append("/opt/openhands-venv/bin/pip install openhands-ai")
 
+        # Override openhands-ai's pinned binaryornot==0.4.4 (which has a
+        # Python 3 incompatibility — `unicode()` is undefined in Py3, in
+        # `binaryornot/helpers.py:106`). Observed crash: agent reads
+        # paper.pdf → binaryornot detection fires → NameError → agent
+        # process dies → empty submission → score 0.0 (upstream OH SSC
+        # postfix run on 2026-04-25). Fix is upstream as of binaryornot
+        # 0.6.0. Pin >=0.5 for safety.
+        install_cmds.append(
+            "/opt/openhands-venv/bin/pip install --upgrade 'binaryornot>=0.5'"
+        )
+
         for cmd in install_cmds:
             result = await computer.send_shell_command(cmd)
             if result.exit_code != 0:
