@@ -266,9 +266,15 @@ class OpenHandsSolver(BasePBSolver):
             oh_log_check = await computer.send_shell_command(
                 "grep -c 'tenacity.RetryError\\|ConnectError' /home/logs/openhands.txt 2>/dev/null || echo 0"
             )
-            connect_err_count = int(
-                oh_log_check.output.decode("utf-8", errors="replace").strip() or "0"
+            # `grep -c PATTERN || echo 0` produces "0\n0" when grep finds 0
+            # matches (grep exits 1, so `|| echo 0` ALSO fires). Take the
+            # first line to handle that and the normal single-line case.
+            raw_output = (
+                oh_log_check.output.decode("utf-8", errors="replace")
+                .strip()
+                .split("\n")[0]
             )
+            connect_err_count = int(raw_output or "0")
             if (
                 attempt_runtime < STARTUP_FAILURE_THRESHOLD_SEC
                 and connect_err_count > 0
