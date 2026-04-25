@@ -383,12 +383,23 @@ async def handle_tool_call(
         return None
     else:
         # Calculate remaining time for per-command timeout enforcement.
+        # Capped at MAX_TOOL_CALL_TIMEOUT_SEC so a single hung command can't
+        # eat the agent's entire remaining budget — without this cap, an
+        # early bash hang locked up upstream LCA basicagent for 1h21m on
+        # 2026-04-24 (agent.log frozen 1 min after launch, the wrapping
+        # asyncio.timeout(time_limit) was the only release valve).
+        # 20 min is generous for any legitimate command (heavy ML pip
+        # installs are the longest realistic case) while still bounding
+        # runaway hangs.
+        MAX_TOOL_CALL_TIMEOUT_SEC = 1200
         remaining_sec: int | None = None
         if start_time is not None and time_limit is not None:
             elapsed = time.time() - start_time
             if use_real_time_limit:
                 elapsed -= total_retry_time
-            remaining_sec = max(30, int(time_limit - elapsed))
+            remaining_sec = max(
+                30, min(MAX_TOOL_CALL_TIMEOUT_SEC, int(time_limit - elapsed))
+            )
 
         tool = next(t for t in tools if t.name() == basic_agent_tool_call.name)
         try:
