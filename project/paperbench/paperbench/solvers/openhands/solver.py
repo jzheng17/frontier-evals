@@ -115,6 +115,25 @@ class OpenHandsSolver(BasePBSolver):
             "mkdir -p /home/.openhands && touch /home/.openhands_instructions"
         )
 
+        # Populate /home/.openhands_instructions with a microagent hint that
+        # steers the agent away from a deterministic crash: OH's str_replace_editor
+        # `read` tool calls binaryornot.is_binary(path) without checking
+        # os.path.isdir(path) first, so `read /home/paper` (a directory)
+        # raises IsADirectoryError → HTTP 500 → AgentState.ERROR → empty
+        # submission → 0.0 score. Observed deterministic ~33% of the time
+        # in the v4 sweep based on which first action the LLM picks.
+        # The hint is loaded by OH's microagents bootstrap and prepended to
+        # the agent's system prompt.
+        install_cmds.append(
+            r"""cat > /home/.openhands_instructions <<'EOF'
+- `/home/paper` is a directory containing the paper PDF and supporting files.
+  To explore it, use `execute_bash` (e.g., `ls -la /home/paper`,
+  `cat /home/paper/paper.md`). Do NOT call the file-read tool
+  (str_replace_editor / read) on `/home/paper` itself or any other directory
+  — it will fail with IsADirectoryError. Only call read on individual files.
+EOF"""
+        )
+
         for cmd in install_cmds:
             result = await computer.send_shell_command(cmd)
             if result.exit_code != 0:
