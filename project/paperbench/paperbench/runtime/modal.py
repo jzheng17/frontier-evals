@@ -70,13 +70,50 @@ class ModalComputerInterface(ComputerInterface):
             )
 
     @override
-    async def upload(self, file: bytes, destination: str) -> None:
+    async def upload(self, file: bytes, destination: str, timeout: float = 600, max_retries: int = 3) -> None:
+        """Upload bytes to the sandbox with timeout + retry.
+
+        Mirrors download()'s timeout/retry pattern (and Harbor PR #1548's
+        modal upload fix). Without this, a single hung Modal `open.aio()`
+        or `f.write.aio()` (TCP/control-plane glitch) wedges the trial
+        forever — observed empirically on the SSNE/t1 upstream Tier 2
+        trial 2026-04-29.
+        """
         # Ensure parent directory exists.
         parent = str(Path(destination).parent)
         await self._exec_raw(f"mkdir -p {parent}")
 
-        async with await self._sandbox.open.aio(destination, "wb") as f:
-            await f.write.aio(file)
+        last_exc: Exception | None = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                async def _do_write() -> None:
+                    async with await self._sandbox.open.aio(destination, "wb") as f:
+                        await f.write.aio(file)
+                await asyncio.wait_for(_do_write(), timeout=timeout)
+                return
+            except asyncio.TimeoutError as e:
+                last_exc = e
+                logger.warning(
+                    "Upload timed out",
+                    destination=destination, timeout=timeout,
+                    attempt=attempt, max_retries=max_retries,
+                )
+            except Exception as e:
+                last_exc = e
+                logger.warning(
+                    "Upload failed",
+                    destination=destination, error=str(e),
+                    attempt=attempt, max_retries=max_retries,
+                )
+
+            if attempt < max_retries:
+                # Exponential backoff: 2, 4, 8 ... capped at 30s
+                wait_s = min(2 ** attempt, 30)
+                await asyncio.sleep(wait_s)
+
+        raise last_exc if last_exc is not None else RuntimeError(
+            f"Upload to {destination} failed after {max_retries} attempts"
+        )
 
     @override
     async def download(self, file: str, timeout: float = 600, max_retries: int = 3) -> bytes:
@@ -174,14 +211,45 @@ class ModalComputerInterface(ComputerInterface):
         process = await self._sandbox.exec.aio(
             "bash", "-c", cmd, timeout=timeout
         )
-        stdout = await process.stdout.read.aio()
-        stderr = await process.stderr.read.aio()
-        exit_code = await process.wait.aio()
+        # Wrap stdout/stderr/wait reads with explicit timeouts so a hung
+        # Modal pipe (sandbox dying mid-call, control-plane glitch, etc.)
+        # raises asyncio.TimeoutError instead of stalling the trial forever.
+        # Mirrors Harbor PR #1548's modal exec fix; observed empirically
+        # on SSNE/t1 upstream Tier 2 (2026-04-29) where a post-trial
+        # in-sandbox tar command hung 3.5h until sandbox_timeout fired.
+        # 600s per read is generous; healthy reads complete in milliseconds.
+        read_timeout = 600.0
+        try:
+            stdout_raw = await asyncio.wait_for(
+                process.stdout.read.aio(), timeout=read_timeout
+            )
+        except asyncio.TimeoutError:
+            stdout_raw = b""
+        try:
+            stderr_raw = await asyncio.wait_for(
+                process.stderr.read.aio(), timeout=read_timeout
+            )
+        except asyncio.TimeoutError:
+            stderr_raw = b""
+        try:
+            exit_code = await asyncio.wait_for(
+                process.wait.aio(), timeout=read_timeout
+            )
+        except asyncio.TimeoutError:
+            exit_code = -1
         # Combine stdout and stderr to match Alcatraz behavior where output
-        # contains both streams interleaved.
-        combined = stdout.encode() if isinstance(stdout, str) else stdout
-        if stderr:
-            stderr_bytes = stderr.encode() if isinstance(stderr, str) else stderr
+        # contains both streams interleaved. Decode bytes with errors="replace"
+        # so malformed UTF-8 (binary blobs, truncated multibyte chars) doesn't
+        # crash downstream Pydantic / log handling.
+        if isinstance(stdout_raw, bytes):
+            combined = stdout_raw
+        else:
+            combined = stdout_raw.encode("utf-8", errors="replace")
+        if stderr_raw:
+            stderr_bytes = (
+                stderr_raw if isinstance(stderr_raw, bytes)
+                else stderr_raw.encode("utf-8", errors="replace")
+            )
             combined = combined + stderr_bytes
         return ExecutionResult(output=combined, exit_code=exit_code)
 

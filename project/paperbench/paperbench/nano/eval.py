@@ -55,7 +55,36 @@ class PaperBench(PythonCodingEval):
     monitor_config: Monitor.Config = chz.field(default_factory=BasicMonitor.Config)
 
     # task args
-    paper_split: Literal["debug", "dev", "human", "testing", "all", "pilot"] = chz.field(
+    paper_split: Literal[
+        "debug",
+        "dev",
+        "human",
+        "testing",
+        "all",
+        "pilot",
+        # Per-paper splits added for parity runs (one paper each).
+        "bbox",
+        "robust-clip",
+        "test-time-model-adaptation",
+        "mechanistic-understanding",
+        "semantic-self-consistency",
+        "self-composing-policies",
+        "self-expansion",
+        "lca-on-the-line",
+        # Tier 2 expansion papers (Harbor Tier 2 coverage sweep, both sides on proxy).
+        "adaptive-pruning",
+        "all-in-one",
+        "bam",
+        "bridging-data-gaps",
+        "ftrl",
+        "lbcs",
+        "pinn",
+        "rice",
+        "sapg",
+        "sequential-neural-score-estimation",
+        "sample-specific-masks",
+        "stochastic-interpolants",
+    ] = chz.field(
         default="all",
         doc=(
             "Paper split to use. One of 'testing' (lca-on-the-line only), "
