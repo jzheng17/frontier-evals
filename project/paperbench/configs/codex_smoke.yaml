@@ -1,0 +1,44 @@
+# Codex CLI smoke-test config (Modal runtime).
+#
+# Mirrors configs/modal_env.yaml exactly — solver/judge/reproduction all run on
+# Modal Sandboxes. The actual solver class is selected via CLI override:
+#   paperbench.solver=paperbench.solvers.codex.solver:CodexSolver
+#
+# Example smoke-test invocation (SSC, code-only, ~10 min budget):
+#
+#   OPENAI_API_KEY=$OAI_KEY_HARBOR_SEMANTIC_SELF_CONSISTENCY \
+#   MODAL_PROFILE=jzheng17 \
+#   uv run python tools/pb_run.py --env-config configs/codex_smoke.yaml \
+#     paperbench.paper_split=pilot \
+#     paperbench.judge.code_only=true \
+#     paperbench.solver=paperbench.solvers.codex.solver:CodexSolver \
+#     paperbench.solver.time_limit=600 \
+#     paperbench.solver.model=gpt-5.2-codex \
+#     paperbench.judge.completer_config=preparedness_turn_completer.oai_completions_turn_completer:OpenAICompletionsTurnCompleter.Config \
+#     paperbench.judge.completer_config.model=gpt-5.2
+
+version: 1
+
+defaults:
+  sandbox_timeout: 14400  # 4 hours max sandbox lifetime
+  enable_docker_daemon: false
+  environment:
+    OPENAI_API_KEY: ${OPENAI_API_KEY}
+
+components:
+  solver:
+    type: "paperbench.runtime.modal:ModalComputerRuntime"
+    # Codex CLI itself is CPU-only; GPU is for the agent's task code.
+    # SSC is a CPU-only task (semantic self-consistency), so use CPU here.
+    gpu_type: null
+    gpu_count: 0
+
+  judge:
+    type: "paperbench.runtime.modal:ModalComputerRuntime"
+    gpu_type: null
+    gpu_count: 0
+
+  reproduction:
+    type: "paperbench.runtime.modal:ModalComputerRuntime"
+    gpu_type: null
+    gpu_count: 0

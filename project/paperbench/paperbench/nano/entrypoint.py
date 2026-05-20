@@ -20,6 +20,9 @@ def _extract_model_name(solver: object) -> str | None:
     # BasicAgentSolver stores model inside completer_config
     if hasattr(solver, "completer_config") and hasattr(solver.completer_config, "model"):
         return solver.completer_config.model
+    # CodexSolver stores model as `model`
+    if hasattr(solver, "model") and isinstance(solver.model, str):
+        return solver.model
     return None
 
 
